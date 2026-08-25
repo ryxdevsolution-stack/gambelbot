@@ -1,0 +1,4 @@
+# Unofficial Quotex client (reverse-engineered WebSocket protocol — no official API exists).
+# Not on PyPI, and requires Python >=3.12 (host only has 3.10, hence the Dockerfile).
+git+https://github.com/cleitonleonel/pyquotex.git
+python-dotenv
