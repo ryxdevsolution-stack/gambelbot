@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signal Bot Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --panel-border: #232838;
+    --text: #e6e9f0;
+    --text-dim: #8b93a7;
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f5a623;
+    --gray: #4b5263;
+    --accent: #4da3ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    padding: 20px 24px 60px;
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+  .sub { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .stats { display: flex; gap: 24px; flex-wrap: wrap; }
+  .stat { text-align: right; }
+  .stat .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .pill.mode { background: rgba(77,163,255,0.15); color: var(--accent); }
+  .pill.stopped { background: rgba(239,68,68,0.18); color: var(--red); }
+  .pill.running { background: rgba(34,197,94,0.15); color: var(--green); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .card.confirmed { border-color: rgba(34,197,94,0.45); }
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .asset-name { font-weight: 700; font-size: 14px; }
+  .price { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+  .strip { display: flex; align-items: flex-end; gap: 2px; height: 34px; margin: 8px 0; }
+  .bar { flex: 1; border-radius: 2px; min-width: 4px; }
+  .bar.G { background: var(--green); height: 100%; }
+  .bar.R { background: var(--red); height: 70%; }
+  .bar.D { background: var(--gray); height: 30%; }
+  .bar.forming { opacity: 0.55; outline: 1px dashed var(--text-dim); outline-offset: 1px; }
+
+  .row2 { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-top: 6px; }
+  .streak { color: var(--text-dim); }
+  .streak b { color: var(--text); }
+  .confirm-badge { font-size: 11px; font-weight: 600; }
+  .confirm-badge.yes { color: var(--green); }
+  .confirm-badge.no { color: var(--text-dim); }
+  .countdown { font-size: 11px; color: var(--text-dim); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .countdown.hot { color: var(--amber); font-weight: 700; }
+  .awaiting { font-size: 11px; color: var(--amber); margin-top: 4px; font-weight: 600; }
+
+  section h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    margin: 0 0 10px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 28px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  td.win { color: var(--green); font-weight: 600; }
+  td.loss { color: var(--red); font-weight: 600; }
+  td.pending { color: var(--amber); }
+  .empty { color: var(--text-dim); font-size: 12px; padding: 8px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Signal Bot Dashboard</h1>
+    <div class="sub" id="modeLine">connecting…</div>
+  </div>
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Daily P&amp;L</div>
+      <div class="value" id="pnl">₹0.00</div>
+    </div>
+    <div class="stat">
+      <div class="label">Status</div>
+      <div class="value"><span class="pill running" id="statusPill">running</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="grid" id="assetGrid"></div>
+
+<section>
+  <h2>Recent Signals</h2>
+  <table id="signalsTable">
+    <thead><tr><th>Time</th><th>Asset</th><th>Trigger candle</th><th>Entry candle</th><th>Auto-trade</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Recent Trades</h2>
+  <table id="tradesTable">
+    <thead><tr><th>Time</th><th>Asset</th><th>Result</th><th>Amount</th><th>Source</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script>
+const STAKE_FMT = n => (n >= 0 ? "+" : "") + "₹" + n.toFixed(2);
+
+function fmtTime(unixSeconds) {
+  if (!unixSeconds) return "--";
+  const d = new Date(unixSeconds * 1000);
+  return d.toLocaleTimeString("en-IN", { hour12: false, timeZone: "Asia/Kolkata" });
+}
+
+function candleStrip(candles, provisionalColor) {
+  const wrap = document.createElement("div");
+  wrap.className = "strip";
+  const recent = candles.slice(-14);
+  for (const c of recent) {
+    const bar = document.createElement("div");
+    bar.className = "bar " + c.color;
+    bar.title = fmtTime(c.time) + " IST  " + c.color;
+    wrap.appendChild(bar);
+  }
+  if (provisionalColor) {
+    const bar = document.createElement("div");
+    bar.className = "bar forming " + provisionalColor;
+    bar.title = "forming now (provisional)";
+    wrap.appendChild(bar);
+  }
+  return wrap;
+}
+
+async function poll() {
+  let data;
+  try {
+    const res = await fetch("/state.json", { cache: "no-store" });
+    data = await res.json();
+  } catch (e) {
+    document.getElementById("modeLine").textContent = "dashboard: waiting for bot…";
+    return;
+  }
+
+  document.getElementById("modeLine").textContent = data.mode || "connecting…";
+
+  const pnlEl = document.getElementById("pnl");
+  pnlEl.textContent = STAKE_FMT(data.daily_pnl);
+  pnlEl.style.color = data.daily_pnl > 0 ? "var(--green)" : data.daily_pnl < 0 ? "var(--red)" : "var(--text)";
+
+  const statusPill = document.getElementById("statusPill");
+  if (data.stopped) {
+    statusPill.textContent = "stopped for today";
+    statusPill.className = "pill stopped";
+  } else {
+    statusPill.textContent = "running";
+    statusPill.className = "pill running";
+  }
+
+  const grid = document.getElementById("assetGrid");
+  grid.innerHTML = "";
+  const assets = data.assets || {};
+  for (const name of Object.keys(assets).sort()) {
+    const a = assets[name];
+    const card = document.createElement("div");
+    card.className = "card" + (a.confirmed ? " confirmed" : "");
+
+    const top = document.createElement("div");
+    top.className = "card-top";
+    top.innerHTML = `<span class="asset-name">${name}</span>
+      <span class="price">${a.current_price != null ? a.current_price : "--"}</span>`;
+    card.appendChild(top);
+
+    card.appendChild(candleStrip(a.candles || [], a.provisional_color));
+
+    const row2 = document.createElement("div");
+    row2.className = "row2";
+    row2.innerHTML = `<span class="streak">green streak <b>${a.green_streak}</b></span>
+      <span class="confirm-badge ${a.confirmed ? "yes" : "no"}">${a.confirmed ? "CONFIRMED ✓" : "not confirmed"}</span>`;
+    card.appendChild(row2);
+
+    const cd = document.createElement("div");
+    const remaining = a.remaining;
+    const hot = remaining != null && remaining <= 8;
+    cd.className = "countdown" + (hot ? " hot" : "");
+    cd.textContent = remaining != null ? `closes in ${Math.max(0, Math.round(remaining))}s` : "waiting for ticks…";
+    card.appendChild(cd);
+
+    if (a.awaiting_entry) {
+      const aw = document.createElement("div");
+      aw.className = "awaiting";
+      aw.textContent = "⏳ entry candle pending";
+      card.appendChild(aw);
+    }
+
+    grid.appendChild(card);
+  }
+
+  const sBody = document.querySelector("#signalsTable tbody");
+  sBody.innerHTML = "";
+  if (!data.signals || data.signals.length === 0) {
+    sBody.innerHTML = `<tr><td colspan="5" class="empty">No signals yet this session.</td></tr>`;
+  } else {
+    for (const s of data.signals) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${fmtTime(s.time)}</td><td>${s.asset}</td><td>${s.trigger_candle} IST</td>
+        <td>${s.entry_candle} IST</td><td>${s.auto_trade ? "yes (demo)" : "alert only"}</td>`;
+      sBody.appendChild(tr);
+    }
+  }
+
+  const tBody = document.querySelector("#tradesTable tbody");
+  tBody.innerHTML = "";
+  if (!data.trades || data.trades.length === 0) {
+    tBody.innerHTML = `<tr><td colspan="5" class="empty">No resolved trades yet this session.</td></tr>`;
+  } else {
+    for (const t of data.trades) {
+      const tr = document.createElement("tr");
+      const cls = t.result === "win" ? "win" : t.result === "loss" ? "loss" : "pending";
+      tr.innerHTML = `<td>${fmtTime(t.time)}</td><td>${t.asset}</td>
+        <td class="${cls}">${(t.result || "?").toUpperCase()}</td>
+        <td class="${cls}">${STAKE_FMT(t.amount || 0)}</td>
+        <td>${t.auto ? "auto (demo)" : "signal-only"}</td>`;
+      tBody.appendChild(tr);
+    }
+  }
+}
+
+poll();
+setInterval(poll, 1000);
+</script>
+
+</body>
+</html>

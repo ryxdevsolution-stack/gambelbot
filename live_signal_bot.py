@@ -20,12 +20,15 @@ the numbers proved it works.
 """
 
 import asyncio
+import json
 import os
+import threading
 import time
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -52,6 +55,22 @@ DEBUG_HEARTBEAT = os.environ.get("DEBUG_HEARTBEAT", "0") == "1"
 # DEMO account -- there is intentionally no code path to the REAL account
 # here; that would need a separate, explicit change.
 AUTO_TRADE_DEMO = os.environ.get("AUTO_TRADE_DEMO", "0") == "1"
+
+# Live dashboard (http://localhost:DASHBOARD_PORT) -- reads straight off the
+# same AssetState/DailyPnL objects the bot uses, no separate state to keep
+# in sync. DASHBOARD["states"] IS the `states` dict built in main(); we
+# populate it via this same object instead of reassigning `states = {}`
+# there, so updates made mid-loop are visible to the HTTP handler for free.
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8787"))
+DASHBOARD = {
+    "mode": "",
+    "started_at": None,
+    "monitoring": [],
+    "states": {},
+    "pnl_tracker": None,
+    "signals": [],   # most-recent-last
+    "trades": [],    # most-recent-last
+}
 
 
 def send_telegram(text):
@@ -93,6 +112,7 @@ class AssetState:
     def __init__(self, asset):
         self.asset = asset
         self.colors = deque(maxlen=2000)  # closed-candle colors, oldest->newest
+        self.candle_history = deque(maxlen=30)  # dashboard only: {time,open,close,color}
         self.last_closed_time = None
         self.last_prev_trigger_result = None  # outcome of most recent RESOLVED trigger
         self.pending_entry_start = None  # start time of the ENTRY candle we bet on, awaiting its close
@@ -108,6 +128,11 @@ class AssetState:
         historical_candles = sorted(historical_candles, key=lambda c: c["time"])
         for c in historical_candles:
             self.colors.append(color(c["open"], c["close"]))
+        for c in historical_candles[-self.candle_history.maxlen:]:
+            self.candle_history.append({
+                "time": c["time"], "open": c["open"], "close": c["close"],
+                "color": color(c["open"], c["close"]),
+            })
         self.last_closed_time = historical_candles[-1]["time"] if historical_candles else None
         self._replay_trigger_history()
 
@@ -153,6 +178,9 @@ class AssetState:
         c = color(closed_open, closed_close)
         was_trigger = self.is_current_trigger(c) if c == "R" else False
         self.colors.append(c)
+        self.candle_history.append({
+            "time": closed_time, "open": closed_open, "close": closed_close, "color": c,
+        })
         self.last_closed_time = closed_time
         self._replay_trigger_history()
         return was_trigger
@@ -285,6 +313,12 @@ async def monitor_asset(client, asset, state, pnl_tracker):
                         pnl_tracker.record(won)
                         print(f"[{asset}] entry candle closed: "
                               f"{'WIN' if won else 'LOSS'}  daily_pnl=₹{pnl_tracker.pnl:+.2f}")
+                        DASHBOARD["trades"].append({
+                            "asset": asset, "order_id": None,
+                            "result": "win" if won else "loss",
+                            "amount": STAKE * PAYOUT if won else -STAKE,
+                            "time": time.time(), "auto": False,
+                        })
                     state.pending_entry_start = None
                     state.auto_traded_entry = False
             else:
@@ -342,6 +376,11 @@ async def monitor_asset(client, asset, state, pnl_tracker):
                         print(f"[{asset}] SIGNAL SENT (remaining={remaining:.1f}s)")
                         state.signaled_for_candle_start = candle_start
                         state.pending_entry_start = candle_start + PERIOD
+                        DASHBOARD["signals"].append({
+                            "asset": asset, "time": time.time(),
+                            "trigger_candle": trigger_start_ist, "entry_candle": entry_start_ist,
+                            "auto_trade": AUTO_TRADE_DEMO,
+                        })
 
                         if AUTO_TRADE_DEMO:
                             # Don't buy() yet -- that would start the TIMER
@@ -391,11 +430,93 @@ async def reconcile_real_trade(client, asset, order_id, pnl_tracker):
     pnl_tracker.record_amount(amount)
     print(f"[{asset}] REAL trade result: {win}  profit={profit}  amount=₹{amount:+.2f}  "
           f"daily_pnl=₹{pnl_tracker.pnl:+.2f}")
+    DASHBOARD["trades"].append({
+        "asset": asset, "order_id": order_id, "result": win,
+        "amount": amount, "time": time.time(), "auto": True,
+    })
+
+
+def _build_dashboard_state():
+    now = time.time()
+    pnl_tracker = DASHBOARD["pnl_tracker"]
+    assets_out = {}
+    for asset, st in DASHBOARD["states"].items():
+        provisional = None
+        if st.tracking_open is not None and st.tracking_last is not None:
+            provisional = color(st.tracking_open, st.tracking_last)
+        streak = 0
+        colors_list = list(st.colors)
+        j = len(colors_list) - 1
+        while j >= 0 and colors_list[j] == "G":
+            streak += 1
+            j -= 1
+        remaining = None
+        if st.tracking_candle_start is not None:
+            remaining = st.tracking_candle_start + PERIOD - now
+        assets_out[asset] = {
+            "candles": list(st.candle_history),
+            "green_streak": streak,
+            "prev_trigger_result": st.last_prev_trigger_result,
+            "confirmed": st.confirmed_by_prev_trigger(),
+            "provisional_color": provisional,
+            "current_price": st.tracking_last,
+            "remaining": remaining,
+            "awaiting_entry": st.pending_entry_start is not None,
+        }
+    return {
+        "mode": DASHBOARD["mode"],
+        "started_at": DASHBOARD["started_at"],
+        "monitoring": DASHBOARD["monitoring"],
+        "daily_pnl": pnl_tracker.pnl if pnl_tracker else 0.0,
+        "stopped": pnl_tracker.stopped if pnl_tracker else False,
+        "stake": STAKE,
+        "daily_stop": DAILY_STOP,
+        "assets": assets_out,
+        "signals": list(reversed(DASHBOARD["signals"][-30:])),
+        "trades": list(reversed(DASHBOARD["trades"][-30:])),
+        "server_time": now,
+    }
+
+
+class _DashboardHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # keep the console output focused on bot activity
+
+    def _send(self, code, body, ctype):
+        if isinstance(body, str):
+            body = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ("/", "/index.html"):
+            try:
+                with open(os.path.join(os.path.dirname(__file__), "dashboard.html"), "rb") as f:
+                    self._send(200, f.read(), "text/html; charset=utf-8")
+            except FileNotFoundError:
+                self._send(404, b"dashboard.html not found", "text/plain")
+        elif self.path == "/state.json":
+            body = json.dumps(_build_dashboard_state()).encode()
+            self._send(200, body, "application/json")
+        else:
+            self._send(404, b"not found", "text/plain")
+
+
+def start_dashboard_server():
+    server = ThreadingHTTPServer(("0.0.0.0", DASHBOARD_PORT), _DashboardHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"Dashboard: http://localhost:{DASHBOARD_PORT}")
 
 
 async def main():
     email = os.environ["QUOTEX_EMAIL"]
     password = os.environ["QUOTEX_PASSWORD"]
+
+    DASHBOARD["started_at"] = time.time()
+    start_dashboard_server()
 
     client = Quotex(email=email, password=password, lang="en", root_path="data")
     check, reason = await client.connect()
@@ -431,9 +552,12 @@ async def main():
     print(f"Monitoring: {open_assets}")
     send_telegram(f"Signal bot started. Monitoring {len(open_assets)} markets: {', '.join(open_assets)}\n"
                   f"Daily stop: ₹{DAILY_STOP:.2f}. {mode_line}")
+    DASHBOARD["mode"] = mode_line
+    DASHBOARD["monitoring"] = open_assets
 
     pnl_tracker = DailyPnL()
-    states = {}
+    DASHBOARD["pnl_tracker"] = pnl_tracker
+    states = DASHBOARD["states"]
     for asset in open_assets:
         state = AssetState(asset)
         try:
