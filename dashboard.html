@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<<<<<<< HEAD
 <title>Signal Bot Dashboard</title>
 <style>
   :root {
@@ -271,5 +272,377 @@ poll();
 setInterval(poll, 1000);
 </script>
 
+=======
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quotex Signal Bot</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen font-mono">
+  <div class="max-w-6xl mx-auto p-3 sm:p-6 space-y-4 sm:space-y-6">
+    <header class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+      <div>
+        <h1 class="text-xl sm:text-2xl font-bold">Quotex Signal Bot</h1>
+        <p class="text-xs sm:text-sm text-amber-400 mt-1">DEMO account only -- there is no real-money auto-trade path in this bot.</p>
+      </div>
+      <div id="statusPill" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-900 border border-gray-800 self-start">
+        <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-gray-500 shrink-0"></span>
+        <span id="statusText" class="text-sm font-medium">Checking...</span>
+      </div>
+    </header>
+
+    <section id="pinCard" class="hidden bg-amber-950/40 border border-amber-700 rounded-xl p-4 sm:p-5 space-y-3">
+      <div class="flex items-center gap-2 text-amber-300 font-semibold">
+        <span>PIN required</span>
+      </div>
+      <p id="pinMessage" class="text-sm text-amber-200">Quotex sent a PIN code to your email.</p>
+      <form id="pinForm" class="flex flex-col sm:flex-row gap-2">
+        <input id="pinInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter PIN code"
+               class="flex-1 bg-gray-900 border border-amber-700 rounded-lg px-3 py-2 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500">
+        <button type="submit" class="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 font-semibold transition">Submit PIN</button>
+      </form>
+      <p id="pinMsg" class="text-xs"></p>
+    </section>
+
+    <section id="errorCard" class="hidden bg-red-950/40 border border-red-700 rounded-xl p-4 text-sm text-red-300"></section>
+
+    <section class="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-5 space-y-3">
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+        <div class="flex gap-3">
+          <button id="startBtn" class="flex-1 sm:flex-none px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 font-semibold transition">Start</button>
+          <button id="stopBtn" class="flex-1 sm:flex-none px-5 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-gray-800 disabled:text-gray-600 font-semibold transition">Stop</button>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-300 select-none">
+          <input id="autoTradeToggle" type="checkbox" checked class="w-4 h-4 accent-emerald-500 shrink-0">
+          Auto-trade (places real DEMO trades)
+        </label>
+      </div>
+      <p class="text-xs text-gray-500">Unchecking Auto-trade runs signal-only mode -- alerts sent, no trades placed. Mode is locked while running; stop first to change it.</p>
+      <p id="actionMsg" class="text-sm break-words"></p>
+    </section>
+
+    <section class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3">
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Uptime</div>
+        <div id="statUptime" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Mode</div>
+        <div id="statMode" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Signals sent</div>
+        <div id="statSignals" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Won / Lost</div>
+        <div id="statWinLoss" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Win rate</div>
+        <div id="statWinRate" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Daily P&amp;L</div>
+        <div id="statPnl" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">Open trades</div>
+        <div id="statOpenTrades" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-2.5 sm:p-3">
+        <div class="text-[11px] sm:text-xs text-gray-500">PID</div>
+        <div id="statPid" class="text-base sm:text-lg font-semibold mt-1 truncate">--</div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="text-sm font-semibold text-gray-400 mb-2">Markets</h2>
+      <div id="assetsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <p class="text-sm text-gray-600 col-span-full">Not running -- start the bot to see live markets here.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="text-sm font-semibold text-gray-400 mb-2">Signals &amp; trades</h2>
+      <div id="eventsList" class="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800 overflow-hidden">
+        <p class="text-sm text-gray-600 p-4">No signals yet.</p>
+      </div>
+    </section>
+
+    <details class="bg-black border border-gray-800 rounded-xl overflow-hidden">
+      <summary class="px-3 sm:px-4 py-2 border-b border-gray-800 text-xs text-gray-400 cursor-pointer select-none flex items-center justify-between">
+        <span>Raw console (debug)</span>
+        <span id="lineCount">0 lines</span>
+      </summary>
+      <pre id="console" class="p-3 sm:p-4 h-64 sm:h-96 overflow-y-auto overflow-x-auto text-[11px] sm:text-xs leading-relaxed whitespace-pre-wrap break-words"></pre>
+    </details>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---------- helpers ----------
+function fmtIST(ts) {
+  if (ts == null) return '--';
+  const d = new Date((ts + 5.5 * 3600) * 1000);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+function fmtUptime(s) {
+  if (s == null) return '--';
+  s = Math.floor(s);
+  const h = String(Math.floor(s / 3600)).padStart(2, '0');
+  const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const sec = String(s % 60).padStart(2, '0');
+  return `${h}:${m}:${sec}`;
+}
+function fmtRemaining(s) {
+  if (s == null) return '--';
+  s = Math.max(0, Math.round(s));
+  const m = Math.floor(s / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return `${m}:${sec}`;
+}
+function colorDot(c) {
+  const cls = c === 'G' ? 'bg-emerald-500' : c === 'R' ? 'bg-red-500' : 'bg-gray-500';
+  return `<span class="inline-block w-3 h-3 rounded-sm ${cls}"></span>`;
+}
+function esc(s) {
+  return (s ?? '').toString().replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const PHASE_LABEL = {
+  idle: 'Idle', connecting: 'Connecting...', awaiting_pin: 'Awaiting PIN', running: 'Running',
+  stopped: 'Stopped', error: 'Error',
+};
+const PHASE_DOT = {
+  idle: 'bg-gray-500', connecting: 'bg-amber-400 animate-pulse', awaiting_pin: 'bg-amber-400 animate-pulse',
+  running: 'bg-emerald-500', stopped: 'bg-gray-500', error: 'bg-red-500',
+};
+
+function renderAssetCard(a) {
+  const candles = (a.candles || []).slice(-10);
+  const dots = candles.map(c => {
+    const revisedNote = c.revised ? ' (corrected by Quotex after settling)' : '';
+    const ring = c.revised ? ' ring-2 ring-amber-400 ring-offset-1 ring-offset-gray-900 rounded-sm' : '';
+    return `<span title="${fmtIST(c.time)}  ${c.open}->${c.close}${revisedNote}" class="${ring}">${colorDot(c.color)}</span>`;
+  }).join(' ');
+  const prov = a.provisional;
+  const provBadge = prov
+    ? `<span class="px-2 py-0.5 rounded text-xs font-semibold ${prov === 'G' ? 'bg-emerald-900 text-emerald-300' : prov === 'R' ? 'bg-red-900 text-red-300' : 'bg-gray-800 text-gray-400'}">${prov === 'G' ? 'GREEN' : prov === 'R' ? 'RED' : 'FLAT'} (forming)</span>`
+    : '<span class="text-xs text-gray-600">--</span>';
+  const triggerBadge = a.is_trigger
+    ? (a.confirmed
+        ? '<span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-600 text-white">CONFIRMED TRIGGER</span>'
+        : '<span class="px-2 py-0.5 rounded text-xs font-semibold bg-amber-700 text-amber-100">trigger, not confirmed</span>')
+    : '';
+  const pendingBadge = a.pending_entry_start
+    ? `<span class="px-2 py-0.5 rounded text-xs font-semibold bg-blue-800 text-blue-200">${a.auto_traded_entry ? 'TRADE OPEN' : 'AWAITING RESULT'} -- entry ${fmtIST(a.pending_entry_start)}</span>`
+    : '';
+  const reason = a.reason || 'Waiting for first closed candle...';
+  return `
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="font-semibold">${esc(a.asset)}</span>
+        <span class="text-xs text-gray-500">${fmtRemaining(a.remaining)} left</span>
+      </div>
+      <div class="flex items-center gap-1 flex-wrap">${dots || '<span class="text-xs text-gray-600">no candles yet</span>'}</div>
+      <div class="flex items-center gap-2 flex-wrap">${provBadge} ${triggerBadge}</div>
+      ${pendingBadge ? `<div>${pendingBadge}</div>` : ''}
+      <p class="text-xs text-gray-500 leading-relaxed">${esc(reason)}</p>
+    </div>`;
+}
+
+function renderEvent(e) {
+  const t = e.ts ? fmtIST(e.ts) : '--';
+  if (e.kind === 'signal') {
+    const earlyBadge = e.early ? '<span class="px-2 py-0.5 rounded text-xs font-semibold bg-amber-700 text-amber-100 w-fit">⚡ EARLY</span>' : '';
+    return `<div class="p-3 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
+      <span class="text-xs text-gray-500 shrink-0 w-14">${t}</span>
+      <span class="px-2 py-0.5 rounded text-xs font-semibold bg-blue-800 text-blue-200 w-fit">SIGNAL</span>
+      ${earlyBadge}
+      <span class="font-semibold">${esc(e.asset)}</span>
+      <span class="text-xs text-gray-500">entry ${fmtIST(e.entry_time)} IST${e.auto_trade ? ' -- auto-trading' : ''}</span>
+      <span class="text-xs text-gray-600 sm:ml-auto">${esc(e.reason || '')}</span>
+    </div>`;
+  }
+  if (e.kind === 'result') {
+    const won = e.won;
+    const label = won == null ? 'UNKNOWN' : won ? 'WIN' : 'LOSS';
+    const cls = won == null ? 'bg-gray-700 text-gray-300' : won ? 'bg-emerald-700 text-emerald-100' : 'bg-red-800 text-red-100';
+    const amt = e.amount != null ? `₹${e.amount >= 0 ? '+' : ''}${e.amount.toFixed(2)}` : '';
+    return `<div class="p-3 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
+      <span class="text-xs text-gray-500 shrink-0 w-14">${t}</span>
+      <span class="px-2 py-0.5 rounded text-xs font-semibold ${cls} w-fit">${label}</span>
+      <span class="font-semibold">${esc(e.asset)}</span>
+      <span class="text-xs text-gray-500">${esc(e.mode || '')}</span>
+      <span class="text-sm font-semibold sm:ml-auto ${won ? 'text-emerald-400' : won == null ? 'text-gray-400' : 'text-red-400'}">${amt}</span>
+    </div>`;
+  }
+  if (e.kind === 'trade_placed') {
+    return `<div class="p-3 flex items-center gap-3 text-xs">
+      <span class="text-gray-500 shrink-0 w-14">${t}</span>
+      <span class="px-2 py-0.5 rounded font-semibold bg-gray-700 text-gray-200 w-fit">TRADE PLACED</span>
+      <span class="font-semibold">${esc(e.asset)}</span>
+      <span class="text-gray-600">order ${esc(e.order_id)}</span>
+    </div>`;
+  }
+  if (e.kind === 'trade_failed') {
+    return `<div class="p-3 flex items-center gap-3 text-xs">
+      <span class="text-gray-500 shrink-0 w-14">${t}</span>
+      <span class="px-2 py-0.5 rounded font-semibold bg-red-900 text-red-200 w-fit">TRADE FAILED</span>
+      <span class="font-semibold">${esc(e.asset)}</span>
+      <span class="text-gray-500">${esc(e.error)}</span>
+    </div>`;
+  }
+  if (e.kind === 'trade_skipped') {
+    return `<div class="p-3 flex items-center gap-3 text-xs">
+      <span class="text-gray-500 shrink-0 w-14">${t}</span>
+      <span class="px-2 py-0.5 rounded font-semibold bg-amber-900 text-amber-200 w-fit">SKIPPED</span>
+      <span class="font-semibold">${esc(e.asset)}</span>
+      <span class="text-gray-500">already max concurrent trades open</span>
+    </div>`;
+  }
+  return '';
+}
+
+async function refreshState() {
+  try {
+    const res = await fetch('/api/state');
+    const s = await res.json();
+
+    const phase = s.phase || (s.running ? 'running' : 'idle');
+    $('statusDot').className = 'w-2.5 h-2.5 rounded-full shrink-0 ' + (PHASE_DOT[phase] || 'bg-gray-500');
+    $('statusText').textContent = PHASE_LABEL[phase] || phase;
+
+    $('startBtn').disabled = s.running;
+    $('stopBtn').disabled = !s.running;
+    $('autoTradeToggle').disabled = s.running;
+
+    // PIN card
+    if (phase === 'awaiting_pin') {
+      $('pinCard').classList.remove('hidden');
+      $('pinMessage').textContent = s.pin_message || 'Quotex sent a PIN code to your email.';
+    } else {
+      $('pinCard').classList.add('hidden');
+      $('pinMsg').textContent = '';
+    }
+
+    // error card
+    if (phase === 'error' && s.error) {
+      $('errorCard').classList.remove('hidden');
+      $('errorCard').textContent = s.error;
+    } else {
+      $('errorCard').classList.add('hidden');
+    }
+
+    $('statUptime').textContent = fmtUptime(s.uptime_seconds);
+    $('statMode').textContent = s.running ? (s.auto_trade ? 'Auto-trade (DEMO)' : 'Signal-only') : '--';
+    $('statPid').textContent = s.pid || '--';
+
+    const stats = s.stats || {};
+    $('statSignals').textContent = stats.signals_sent ?? '--';
+    $('statWinLoss').textContent = `${stats.wins ?? 0} / ${stats.losses ?? 0}`;
+    const total = (stats.wins || 0) + (stats.losses || 0);
+    $('statWinRate').textContent = total > 0 ? `${((stats.wins / total) * 100).toFixed(0)}%` : '--';
+    $('statPnl').textContent = stats.daily_pnl != null ? `₹${stats.daily_pnl >= 0 ? '+' : ''}${stats.daily_pnl.toFixed(2)}` : '--';
+    $('statPnl').className = 'text-base sm:text-lg font-semibold mt-1 truncate' + (stats.daily_pnl == null ? '' : (stats.daily_pnl >= 0 ? ' text-emerald-400' : ' text-red-400'));
+    $('statOpenTrades').textContent = stats.open_trades ?? '--';
+
+    if (stats.stopped_for_day) {
+      $('actionMsg').textContent = 'Daily loss cap hit -- bot has stopped sending new signals for today.';
+      $('actionMsg').className = 'text-sm text-amber-400';
+    }
+
+    // asset cards
+    const assets = s.assets || [];
+    $('assetsGrid').innerHTML = assets.length
+      ? assets.map(renderAssetCard).join('')
+      : '<p class="text-sm text-gray-600 col-span-full">Not running -- start the bot to see live markets here.</p>';
+
+    // events timeline
+    const events = s.events || [];
+    $('eventsList').innerHTML = events.length
+      ? events.map(renderEvent).join('')
+      : '<p class="text-sm text-gray-600 p-4">No signals yet.</p>';
+  } catch (e) {
+    $('statusText').textContent = 'Dashboard offline?';
+  }
+}
+
+let sinceIdx = 0;
+let autoScroll = true;
+const consoleEl = $('console');
+consoleEl.addEventListener('scroll', () => {
+  autoScroll = consoleEl.scrollTop + consoleEl.clientHeight >= consoleEl.scrollHeight - 20;
+});
+
+async function refreshLogs() {
+  try {
+    const res = await fetch(`/api/logs?since=${sinceIdx}`);
+    const data = await res.json();
+    if (data.lines.length) {
+      for (const line of data.lines) {
+        consoleEl.textContent += line.text + '\n';
+        sinceIdx = line.i;
+      }
+      $('lineCount').textContent = `${sinceIdx} lines`;
+      if (autoScroll) consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+  } catch (e) {}
+}
+
+$('startBtn').addEventListener('click', async () => {
+  $('startBtn').disabled = true;
+  $('actionMsg').textContent = 'Starting...';
+  $('actionMsg').className = 'text-sm text-gray-400';
+  const auto_trade = $('autoTradeToggle').checked;
+  const res = await fetch('/api/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auto_trade }),
+  });
+  const data = await res.json();
+  $('actionMsg').textContent = data.message;
+  $('actionMsg').className = 'text-sm ' + (data.ok ? 'text-emerald-400' : 'text-red-400');
+  refreshState();
+});
+
+$('stopBtn').addEventListener('click', async () => {
+  $('stopBtn').disabled = true;
+  $('actionMsg').textContent = 'Stopping...';
+  $('actionMsg').className = 'text-sm text-gray-400';
+  const res = await fetch('/api/stop', { method: 'POST' });
+  const data = await res.json();
+  $('actionMsg').textContent = data.message;
+  $('actionMsg').className = 'text-sm ' + (data.ok ? 'text-emerald-400' : 'text-red-400');
+  refreshState();
+});
+
+$('pinForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const code = $('pinInput').value.trim();
+  if (!code) return;
+  $('pinMsg').textContent = 'Submitting...';
+  $('pinMsg').className = 'text-xs text-gray-400';
+  const res = await fetch('/api/pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  const data = await res.json();
+  $('pinMsg').textContent = data.message;
+  $('pinMsg').className = 'text-xs ' + (data.ok ? 'text-emerald-400' : 'text-red-400');
+  if (data.ok) $('pinInput').value = '';
+  refreshState();
+});
+
+refreshState();
+refreshLogs();
+setInterval(refreshState, 1200);
+setInterval(refreshLogs, 2000);
+</script>
+>>>>>>> ad6f96d (dashboard update)
 </body>
 </html>

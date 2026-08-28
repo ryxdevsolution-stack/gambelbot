@@ -20,6 +20,10 @@ the numbers proved it works.
 """
 
 import asyncio
+<<<<<<< HEAD
+=======
+import html
+>>>>>>> ad6f96d (dashboard update)
 import json
 import os
 import threading
@@ -44,7 +48,11 @@ DAILY_STOP = -500.0  # INR -- stop for the day once P&L hits this (flat Rs.100 s
 STAKE = 100.0  # INR -- account minimum trade size
 PAYOUT = 0.80  # approximate, used only for the simulated (signal-only) P&L display
 SIGNAL_LEAD_SECONDS = 5
+EARLY_LEAD_SECONDS = 10  # can fire this early ONLY if the move already looks decisive -- see EARLY_CONFIRM_RATIO
+EARLY_CONFIRM_RATIO = 0.7  # current down-move must be >= 70% of this asset's typical candle body to fire early
+TYPICAL_RANGE_WINDOW = 20  # candles averaged to find "typical" body size
 HISTORY_SEED_HOURS = 24
+MAX_CONCURRENT_TRADES = 2  # across ALL assets combined -- signals still send, but auto-placement is skipped beyond this
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -73,9 +81,24 @@ DASHBOARD = {
 }
 
 
+def emit(event_type, **fields):
+    """Print a structured JSON event line (prefixed EVT::) alongside the
+    normal human-readable print()s elsewhere in this file. A dashboard can
+    parse these for a rich UI without touching this script's control flow
+    -- purely additive, the trading logic itself is unchanged by this."""
+    try:
+        print("EVT::" + json.dumps({"type": event_type, "ts": time.time(), **fields}), flush=True)
+    except (TypeError, ValueError):
+        pass
+
+
 def send_telegram(text):
+    """HTML-formatted Telegram message. Any interpolated value that isn't
+    a known-safe fixed string (asset codes, our own formatted numbers)
+    must be passed through html.escape() first -- Telegram rejects the
+    whole message if the HTML is malformed."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode()
+    data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
     try:
         urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
     except Exception as e:
@@ -112,9 +135,14 @@ class AssetState:
     def __init__(self, asset):
         self.asset = asset
         self.colors = deque(maxlen=2000)  # closed-candle colors, oldest->newest
+<<<<<<< HEAD
         self.candle_history = deque(maxlen=30)  # dashboard only: {time,open,close,color}
+=======
+        self.candle_records = deque(maxlen=100)  # {time, open, close, color} for the UI
+>>>>>>> ad6f96d (dashboard update)
         self.last_closed_time = None
         self.last_prev_trigger_result = None  # outcome of most recent RESOLVED trigger
+        self.last_prev_trigger_info = None  # {"trigger_time":, "outcome":} -- for UI "why confirmed" text
         self.pending_entry_start = None  # start time of the ENTRY candle we bet on, awaiting its close
         self.signaled_for_candle_start = None  # guards against duplicate alerts
         self.auto_traded_entry = False  # True if the pending entry has a real order (see reconcile_real_trade)
@@ -127,12 +155,18 @@ class AssetState:
     def seed(self, historical_candles):
         historical_candles = sorted(historical_candles, key=lambda c: c["time"])
         for c in historical_candles:
+<<<<<<< HEAD
             self.colors.append(color(c["open"], c["close"]))
         for c in historical_candles[-self.candle_history.maxlen:]:
             self.candle_history.append({
                 "time": c["time"], "open": c["open"], "close": c["close"],
                 "color": color(c["open"], c["close"]),
             })
+=======
+            cc = color(c["open"], c["close"])
+            self.colors.append(cc)
+            self.candle_records.append({"time": c["time"], "open": c["open"], "close": c["close"], "color": cc})
+>>>>>>> ad6f96d (dashboard update)
         self.last_closed_time = historical_candles[-1]["time"] if historical_candles else None
         self._replay_trigger_history()
 
@@ -151,11 +185,45 @@ class AssetState:
             if streak >= 2:
                 triggers.append(i)
         last_result = None
+        last_index = None
         for i in triggers:
             outcome = resolve(colors, i)
             if outcome is not None:
                 last_result = outcome
+                last_index = i
         self.last_prev_trigger_result = last_result
+        if last_index is not None and self.last_closed_time is not None:
+            offset_from_end = (n - 1) - last_index
+            trigger_time = self.last_closed_time - offset_from_end * PERIOD
+            self.last_prev_trigger_info = {"trigger_time": trigger_time, "outcome": last_result}
+        else:
+            self.last_prev_trigger_info = None
+
+    def typical_range(self, n=TYPICAL_RANGE_WINDOW):
+        """Average |close-open| body size over the last n closed candles --
+        the yardstick for judging whether an in-progress move is already
+        decisive enough to call early (see EARLY_CONFIRM_RATIO)."""
+        recs = list(self.candle_records)[-n:]
+        if not recs:
+            return None
+        diffs = [abs(r["close"] - r["open"]) for r in recs]
+        return sum(diffs) / len(diffs)
+
+    def confirmation_reason(self):
+        """Plain-language explanation of why the pattern is (or isn't)
+        currently confirmed, for the dashboard."""
+        info = self.last_prev_trigger_info
+        if info is None:
+            return "No prior 2-green-then-red trigger seen yet in history -- nothing to confirm against."
+        t = datetime.fromtimestamp(info["trigger_time"], tz=IST).strftime("%H:%M")
+        outcome = info["outcome"]
+        if outcome == "direct":
+            return f"Confirmed: last such trigger at {t} IST won directly (the very next candle was red)."
+        if outcome == "martingale":
+            return f"Not confirmed: last such trigger at {t} IST only won via martingale (2nd candle after was red, not the 1st)."
+        if outcome == "double_loss":
+            return f"Not confirmed: last such trigger at {t} IST lost twice in a row."
+        return "Not confirmed."
 
     def is_current_trigger(self, provisional_color):
         """Would the currently-forming candle (with this provisional
@@ -178,12 +246,48 @@ class AssetState:
         c = color(closed_open, closed_close)
         was_trigger = self.is_current_trigger(c) if c == "R" else False
         self.colors.append(c)
+<<<<<<< HEAD
         self.candle_history.append({
+=======
+        self.candle_records.append({
+>>>>>>> ad6f96d (dashboard update)
             "time": closed_time, "open": closed_open, "close": closed_close, "color": c,
         })
         self.last_closed_time = closed_time
         self._replay_trigger_history()
         return was_trigger
+
+    def revise_candle(self, candle_time, new_open, new_close):
+        """Correct a previously-recorded candle if Quotex's OFFICIAL value
+        for it changed after settling -- confirmed live: get_historical_
+        candles can return a still-provisional close right after a candle
+        closes, then a different (final) value some time later.
+
+        self.colors holds far more history (up to 2000 candles) than
+        candle_records (capped at 100, for the UI) and isn't timestamped,
+        so the matching position is located by its offset from the newest
+        closed candle rather than rebuilt from candle_records -- rebuilding
+        from the capped list would silently truncate the trigger-history
+        window. Returns the new color if the value actually changed, else
+        None."""
+        new_c = color(new_open, new_close)
+        changed = False
+        for rec in self.candle_records:
+            if rec["time"] == candle_time:
+                if rec["color"] != new_c or rec["open"] != new_open or rec["close"] != new_close:
+                    rec["open"], rec["close"], rec["color"] = new_open, new_close, new_c
+                    changed = True
+                break
+        if not changed or self.last_closed_time is None:
+            return None
+        offset_from_end = (self.last_closed_time - candle_time) // PERIOD
+        idx = len(self.colors) - 1 - offset_from_end
+        if 0 <= idx < len(self.colors):
+            colors_list = list(self.colors)
+            colors_list[idx] = new_c
+            self.colors = deque(colors_list, maxlen=self.colors.maxlen)
+            self._replay_trigger_history()
+        return new_c
 
 
 async def fetch_official_candle(client, asset, candle_time, attempts=4, delay=2.0):
@@ -209,11 +313,53 @@ async def fetch_official_candle(client, asset, candle_time, attempts=4, delay=2.
     return None, None
 
 
+REVALIDATE_DELAY = 90  # seconds -- give Quotex's feed time to settle before trusting a candle for good
+
+
+async def revalidate_and_emit(client, asset, state, closed_start):
+    """One-shot delayed re-check of a candle already recorded via
+    fetch_official_candle(). If Quotex's value for it changed in the
+    meantime (confirmed live -- see revise_candle()), correct our stored
+    history and tell the dashboard. Runs as a background task so it never
+    delays the main monitoring loop or trade placement."""
+    await asyncio.sleep(REVALIDATE_DELAY)
+    try:
+        open_, close_ = await fetch_official_candle(client, asset, closed_start, attempts=2, delay=2.0)
+    except Exception as e:
+        print(f"[{asset}] revalidate error for {closed_start}: {e}")
+        return
+    if open_ is None:
+        return
+    new_color = state.revise_candle(closed_start, open_, close_)
+    if new_color is not None:
+        print(f"[{asset}] CORRECTED candle {closed_start}: Quotex revised it to "
+              f"open={open_} close={close_} color={new_color} (differs from the value first read)")
+        emit("candle_revised", asset=asset, time=closed_start, open=open_, close=close_,
+             color=new_color, last_prev_trigger=state.last_prev_trigger_result,
+             reason=state.confirmation_reason())
+
+
 class DailyPnL:
     def __init__(self):
         self.day = None
         self.pnl = 0.0
         self.stopped = False
+        self.open_trades = 0  # currently-open real orders, across all assets
+        self.signals_sent = 0  # session totals -- do not reset daily, purely informational
+        self.wins = 0
+        self.losses = 0
+
+    def can_open_trade(self):
+        return self.open_trades < MAX_CONCURRENT_TRADES
+
+    def trade_opened(self):
+        self.open_trades += 1
+
+    def trade_closed(self):
+        self.open_trades = max(0, self.open_trades - 1)
+
+    def record_signal(self):
+        self.signals_sent += 1
 
     def check_new_day(self):
         today = datetime.now(timezone.utc).date()
@@ -222,21 +368,31 @@ class DailyPnL:
             self.pnl = 0.0
             self.stopped = False
             print(f"[{today}] New trading day, simulated P&L reset.")
+            emit("new_day", day=str(today))
 
     def record(self, won):
-        self.record_amount(STAKE * PAYOUT if won else -STAKE)
+        self.record_amount(STAKE * PAYOUT if won else -STAKE, won)
 
-    def record_amount(self, amount):
+    def record_amount(self, amount, won):
         self.check_new_day()
         self.pnl += amount
+        if won:
+            self.wins += 1
+        else:
+            self.losses += 1
         if self.pnl <= DAILY_STOP and not self.stopped:
             self.stopped = True
-            send_telegram(f"STOP for today. P&L hit ₹{self.pnl:+.2f} "
-                           f"(limit ₹{DAILY_STOP:.2f}). No more signals until tomorrow.")
+            send_telegram(
+                f"🛑 <b>Daily stop hit</b>\n\n"
+                f"📊 P&amp;L: <b>₹{self.pnl:+.2f}</b>\n"
+                f"🚧 Limit: ₹{DAILY_STOP:.2f}\n\n"
+                f"No more signals until tomorrow."
+            )
             print(f"[STOP] Daily loss cap hit: ₹{self.pnl:+.2f}")
+            emit("daily_stop", pnl=self.pnl)
 
 
-async def monitor_asset(client, asset, state, pnl_tracker):
+async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
     await client.start_candles_stream(asset, PERIOD)
     print(f"[{asset}] streaming started")
     last_heartbeat = 0
@@ -280,7 +436,72 @@ async def monitor_asset(client, asset, state, pnl_tracker):
         else:
             latest_price = open_price = None
 
-        # 1. Detect a boundary crossing: the candle we were tracking has
+        # 1. TIME-CRITICAL, runs FIRST: if an auto-trade is pending for the
+        #    candle that JUST started (candle_start == pending_entry_start),
+        #    place it right now -- before anything slower below -- so a
+        #    TIMER-mode trade's window matches the entry candle's true open
+        #    as closely as possible. (This used to run AFTER the official-
+        #    candle reconciliation below, which could delay buy() by up to
+        #    ~8s on retries -- misaligning the trade window. Confirmed live:
+        #    this delay is the likely cause of a case where the bot's own
+        #    candle-color read said LOSS but the real platform result was
+        #    WIN, i.e. the actual order caught a different price window
+        #    than the candle it was compared against.)
+        if state.auto_trade_pending and state.pending_entry_start == candle_start:
+            state.auto_trade_pending = False
+            # Serialize the whole check-then-buy sequence with trade_lock:
+            # pyquotex's buy() uses UNKEYED shared state on the one client
+            # connection (self.api.buy_id, self.api.slots.buy_confirm) --
+            # confirmed by reading its source. Two buy() calls in flight at
+            # once can each observe the OTHER's confirmation event, so both
+            # "succeed" with the same order_id while only one real order
+            # lands on the exchange (seen live: 3 assets signaled the same
+            # candle, dashboard showed 3 trades placed with an IDENTICAL
+            # order_id, Quotex showed only 1 real trade). The lock also
+            # closes a race in can_open_trade()/trade_opened(): without it,
+            # multiple assets could all pass the "under the cap" check
+            # before any of them registered as open, letting more than
+            # MAX_CONCURRENT_TRADES through.
+            async with trade_lock:
+                if not pnl_tracker.can_open_trade():
+                    print(f"[{asset}] AUTO-TRADE SKIPPED: already {pnl_tracker.open_trades} "
+                          f"trade(s) open (max {MAX_CONCURRENT_TRADES}).")
+                    send_telegram(
+                        f"⏭️ <b>{html.escape(asset)}</b> -- auto-trade skipped\n"
+                        f"Already {MAX_CONCURRENT_TRADES} trades open (max reached)."
+                    )
+                    emit("trade_skipped", asset=asset, reason="max_concurrent", open_trades=pnl_tracker.open_trades)
+                    state.auto_traded_entry = False
+                else:
+                    try:
+                        success, event_data = await client.buy(
+                            STAKE, asset, "put", PERIOD, time_mode="TIMER"
+                        )
+                    except Exception as e:
+                        success, event_data = False, str(e)
+                    if success and isinstance(event_data, dict) and event_data.get("id"):
+                        order_id = event_data["id"]
+                        pnl_tracker.trade_opened()
+                        print(f"[{asset}] AUTO-TRADE placed at candle open, order_id={order_id} "
+                              f"(open_trades={pnl_tracker.open_trades})")
+                        emit("trade_placed", asset=asset, order_id=str(order_id), open_trades=pnl_tracker.open_trades)
+                        asyncio.create_task(
+                            reconcile_real_trade(client, asset, order_id, pnl_tracker)
+                        )
+                    else:
+                        print(f"[{asset}] AUTO-TRADE FAILED: {event_data}")
+                        send_telegram(
+                            f"⚠️ <b>{html.escape(asset)} auto-trade FAILED</b>\n"
+                            f"{html.escape(str(event_data))}"
+                        )
+                        emit("trade_failed", asset=asset, error=str(event_data))
+                        # No real order exists -- clear the flag so the entry-candle
+                        # close below falls through to the simulated P&L record
+                        # instead of silently waiting forever on a result that will
+                        # never arrive.
+                        state.auto_traded_entry = False
+
+        # 2. Detect a boundary crossing: the candle we were tracking has
         #    now closed. Finalize it using the OFFICIAL server-recorded
         #    OHLC (not tick-derived -- confirmed live that tick-derived
         #    open/close can misjudge a near-doji candle's color, which
@@ -290,35 +511,53 @@ async def monitor_asset(client, asset, state, pnl_tracker):
             was_entry = (state.pending_entry_start == closed_start)
 
             official_open, official_close = await fetch_official_candle(client, asset, closed_start)
-            if official_open is None:
+            used_fallback = official_open is None
+            if used_fallback:
                 print(f"[{asset}] WARNING: could not fetch official candle for {closed_start} "
                       f"after retries -- falling back to tick-derived data (less reliable).")
                 official_open, official_close = state.tracking_open, state.tracking_last
 
             if official_open is not None and official_close is not None:
-                state.on_candle_closed(official_open, official_close, closed_start)
+                was_trigger = state.on_candle_closed(official_open, official_close, closed_start)
+                closed_color = color(official_open, official_close)
                 if DEBUG_HEARTBEAT:
                     print(f"[{asset}] DEBUG candle closed t={closed_start} "
                           f"open={official_open} close={official_close} "
-                          f"color={color(official_open, official_close)} was_entry={was_entry}")
+                          f"color={closed_color} was_entry={was_entry}")
+                emit("candle", asset=asset, time=closed_start, open=official_open, close=official_close,
+                     color=closed_color, was_trigger=was_trigger, was_entry=was_entry,
+                     used_fallback=used_fallback, last_prev_trigger=state.last_prev_trigger_result,
+                     reason=state.confirmation_reason())
+                # Quotex's own historical data isn't always final the
+                # moment a candle closes (confirmed live -- see
+                # revise_candle()); re-check once, later, and correct if
+                # it changed. Background task, never blocks this loop.
+                asyncio.create_task(revalidate_and_emit(client, asset, state, closed_start))
                 if was_entry:
-                    won = color(official_open, official_close) == "R"
+                    won = closed_color == "R"
                     if state.auto_traded_entry:
                         # real P&L comes from reconcile_real_trade() via
                         # check_win() instead -- skip the simulated record
                         # to avoid double-counting.
                         print(f"[{asset}] entry candle closed (official): "
                               f"{'WIN' if won else 'LOSS'} -- waiting on real order result")
+                        emit("entry_closed", asset=asset, entry_time=closed_start, won=won, pending_real=True)
                     else:
                         pnl_tracker.record(won)
                         print(f"[{asset}] entry candle closed: "
                               f"{'WIN' if won else 'LOSS'}  daily_pnl=₹{pnl_tracker.pnl:+.2f}")
+<<<<<<< HEAD
                         DASHBOARD["trades"].append({
                             "asset": asset, "order_id": None,
                             "result": "win" if won else "loss",
                             "amount": STAKE * PAYOUT if won else -STAKE,
                             "time": time.time(), "auto": False,
                         })
+=======
+                        emit("result", asset=asset, entry_time=closed_start, won=won, mode="simulated",
+                             amount=(STAKE * PAYOUT if won else -STAKE), daily_pnl=pnl_tracker.pnl,
+                             wins=pnl_tracker.wins, losses=pnl_tracker.losses)
+>>>>>>> ad6f96d (dashboard update)
                     state.pending_entry_start = None
                     state.auto_traded_entry = False
             else:
@@ -328,28 +567,6 @@ async def monitor_asset(client, asset, state, pnl_tracker):
             state.tracking_open = None
             state.tracking_last = None
 
-        # 1b. If an auto-trade is pending for the candle that JUST started
-        #     (candle_start == pending_entry_start), place it now -- right
-        #     at the true open, so a TIMER-mode trade's window matches the
-        #     entry candle exactly instead of starting ~5s early.
-        if state.auto_trade_pending and state.pending_entry_start == candle_start:
-            state.auto_trade_pending = False
-            try:
-                success, event_data = await client.buy(
-                    STAKE, asset, "put", PERIOD, time_mode="TIMER"
-                )
-            except Exception as e:
-                success, event_data = False, str(e)
-            if success and isinstance(event_data, dict) and event_data.get("id"):
-                order_id = event_data["id"]
-                print(f"[{asset}] AUTO-TRADE placed at candle open, order_id={order_id}")
-                asyncio.create_task(
-                    reconcile_real_trade(client, asset, order_id, pnl_tracker)
-                )
-            else:
-                print(f"[{asset}] AUTO-TRADE FAILED: {event_data}")
-                send_telegram(f"WARNING: {asset} auto-trade failed to place: {event_data}")
-
         # start (or continue) tracking the current candle
         if open_price is not None and latest_price is not None:
             if state.tracking_candle_start != candle_start:
@@ -357,13 +574,38 @@ async def monitor_asset(client, asset, state, pnl_tracker):
                 state.tracking_open = open_price
             state.tracking_last = latest_price
 
-        # 2. Near the close of the CURRENT candle, evaluate the provisional
-        #    color and fire a signal if it's a confirmed trigger.
-        if (SIGNAL_LEAD_SECONDS - 1) <= remaining <= (SIGNAL_LEAD_SECONDS + 1):
+        # Live snapshot for the dashboard -- the currently-forming candle's
+        # provisional color/streak, independent of the signal-lead window
+        # below (this is purely informational, doesn't affect trading).
+        provisional_now = color(open_price, latest_price) if (open_price is not None and latest_price is not None) else None
+        streak_now = 0
+        for c in reversed(state.colors):
+            if c == "G":
+                streak_now += 1
+            else:
+                break
+        is_trigger_now = state.is_current_trigger(provisional_now) if provisional_now else False
+        confirmed_now = is_trigger_now and state.confirmed_by_prev_trigger()
+        emit("tick", asset=asset, candle_start=candle_start, remaining=round(remaining, 1),
+             open=open_price, last=latest_price, provisional=provisional_now, streak=streak_now,
+             is_trigger=is_trigger_now, confirmed=confirmed_now,
+             pending_entry_start=state.pending_entry_start, auto_traded_entry=state.auto_traded_entry)
+
+        # 3. Fire a signal once the trigger is confirmed. Normally waits
+        #    until SIGNAL_LEAD_SECONDS before close (fires regardless of
+        #    how marginal the move is -- the safety net). If the move
+        #    already looks decisive well before that -- at least
+        #    EARLY_CONFIRM_RATIO of this asset's typical candle body size
+        #    -- fire as early as EARLY_LEAD_SECONDS instead, for more
+        #    reaction time. A reversal in the remaining seconds is still
+        #    possible either way; this only changes WHEN we call it, not
+        #    whether the candle can flip.
+        if (SIGNAL_LEAD_SECONDS - 1) <= remaining <= (EARLY_LEAD_SECONDS + 1):
             if state.signaled_for_candle_start != candle_start and not pnl_tracker.stopped:
                 if open_price is not None and latest_price is not None:
                     provisional = color(open_price, latest_price)
                     if state.is_current_trigger(provisional) and state.confirmed_by_prev_trigger():
+<<<<<<< HEAD
                         trigger_start_ist = datetime.fromtimestamp(candle_start, tz=IST).strftime("%H:%M")
                         entry_start_ist = datetime.fromtimestamp(candle_start + PERIOD, tz=IST).strftime("%H:%M")
                         send_telegram(
@@ -381,15 +623,48 @@ async def monitor_asset(client, asset, state, pnl_tracker):
                             "trigger_candle": trigger_start_ist, "entry_candle": entry_start_ist,
                             "auto_trade": AUTO_TRADE_DEMO,
                         })
+=======
+                        in_normal_window = remaining <= (SIGNAL_LEAD_SECONDS + 1)
+                        is_early = False
+                        if not in_normal_window:
+                            typical = state.typical_range()
+                            move = open_price - latest_price  # positive = moved down (red-ward)
+                            is_early = typical is not None and typical > 0 and move >= EARLY_CONFIRM_RATIO * typical
+                        if in_normal_window or is_early:
+                            trigger_start_ist = datetime.fromtimestamp(candle_start, tz=IST).strftime("%H:%M")
+                            entry_start_ist = datetime.fromtimestamp(candle_start + PERIOD, tz=IST).strftime("%H:%M")
+                            action_line = ("🤖 Auto-trading this one for you\n" if AUTO_TRADE_DEMO
+                                            else "👉 Place this trade yourself\n")
+                            early_line = "⚡ <b>Early call</b> -- move already decisive\n\n" if is_early else ""
+                            closing_note = "closing soon" if is_early else "closing now"
+                            send_telegram(
+                                f"🔴 <b>SIGNAL: {html.escape(asset)}</b>\n"
+                                f"📉 Direction: <b>DOWN (PUT)</b>\n\n"
+                                f"{early_line}"
+                                f"⏱️ Trigger candle: <b>{trigger_start_ist} IST</b> ({closing_note})\n"
+                                f"🎯 Entry candle: <b>{entry_start_ist} IST</b> ← trade this one\n\n"
+                                f"⏳ Expiry: 5 minutes\n"
+                                f"💰 Stake: ₹{STAKE:.0f}\n"
+                                f"{action_line}\n"
+                                f"📊 Daily P&amp;L: ₹{pnl_tracker.pnl:+.2f}"
+                            )
+                            print(f"[{asset}] SIGNAL SENT (remaining={remaining:.1f}s"
+                                  f"{' EARLY' if is_early else ''})")
+                            pnl_tracker.record_signal()
+                            emit("signal", asset=asset, trigger_time=candle_start, entry_time=candle_start + PERIOD,
+                                 reason=state.confirmation_reason(), auto_trade=AUTO_TRADE_DEMO, early=is_early)
+                            state.signaled_for_candle_start = candle_start
+                            state.pending_entry_start = candle_start + PERIOD
+>>>>>>> ad6f96d (dashboard update)
 
-                        if AUTO_TRADE_DEMO:
-                            # Don't buy() yet -- that would start the TIMER
-                            # ~5s before the entry candle actually begins,
-                            # misaligning the trade window with the candle.
-                            # Place it right when the entry candle starts
-                            # instead (see boundary-crossing block below).
-                            state.auto_traded_entry = True
-                            state.auto_trade_pending = True
+                            if AUTO_TRADE_DEMO:
+                                # Don't buy() yet -- that would start the TIMER
+                                # ~5s before the entry candle actually begins,
+                                # misaligning the trade window with the candle.
+                                # Place it right when the entry candle starts
+                                # instead (see boundary-crossing block below).
+                                state.auto_traded_entry = True
+                                state.auto_trade_pending = True
 
         await asyncio.sleep(1)
 
@@ -416,19 +691,29 @@ async def reconcile_real_trade(client, asset, order_id, pnl_tracker):
         print(f"[{asset}] get_result cross-check failed for order {order_id}: {e}")
 
     if win not in ("win", "loss"):
+        pnl_tracker.trade_closed()
         print(f"[{asset}] Could not determine result for order {order_id} -- NOT recorded to daily P&L.")
-        send_telegram(f"WARNING: {asset} trade result unknown (order {order_id}). Check your app manually.")
+        send_telegram(
+            f"❓ <b>{html.escape(asset)} trade result unknown</b>\n"
+            f"Order: {html.escape(str(order_id))}\n"
+            f"Please check your app manually."
+        )
+        emit("result", asset=asset, order_id=str(order_id), won=None, mode="unknown",
+             open_trades=pnl_tracker.open_trades)
         return
 
+    won = win == "win"
     if profit is not None and profit != 0:
         # trust the real figure from the platform (works whether a loss is
         # recorded as 0, or as a negative profitAmount).
-        amount = profit if win == "win" else -abs(profit)
+        amount = profit if won else -abs(profit)
     else:
-        amount = STAKE * PAYOUT if win == "win" else -STAKE
+        amount = STAKE * PAYOUT if won else -STAKE
 
-    pnl_tracker.record_amount(amount)
+    pnl_tracker.trade_closed()
+    pnl_tracker.record_amount(amount, won)
     print(f"[{asset}] REAL trade result: {win}  profit={profit}  amount=₹{amount:+.2f}  "
+<<<<<<< HEAD
           f"daily_pnl=₹{pnl_tracker.pnl:+.2f}")
     DASHBOARD["trades"].append({
         "asset": asset, "order_id": order_id, "result": win,
@@ -509,19 +794,46 @@ def start_dashboard_server():
     server = ThreadingHTTPServer(("0.0.0.0", DASHBOARD_PORT), _DashboardHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"Dashboard: http://localhost:{DASHBOARD_PORT}")
+=======
+          f"daily_pnl=₹{pnl_tracker.pnl:+.2f}  open_trades={pnl_tracker.open_trades}")
+    emit("result", asset=asset, order_id=str(order_id), won=won, amount=amount, mode="real",
+         daily_pnl=pnl_tracker.pnl, wins=pnl_tracker.wins, losses=pnl_tracker.losses,
+         open_trades=pnl_tracker.open_trades)
+
+
+async def otp_callback(message):
+    """Called by pyquotex when Quotex needs an email PIN/2FA code. Emits a
+    structured event so a UI can show an input box, then blocks (off the
+    event loop, via a worker thread) on a plain input() -- in the terminal
+    that's the real keyboard; behind the dashboard, dashboard_server.py
+    pipes the code the user submits in the browser into this process's
+    stdin, which input() then reads exactly the same way."""
+    emit("pin_requested", message=message)
+    loop = asyncio.get_running_loop()
+    code = await loop.run_in_executor(None, input)
+    emit("pin_submitted")
+    return code
+>>>>>>> ad6f96d (dashboard update)
 
 
 async def main():
     email = os.environ["QUOTEX_EMAIL"]
     password = os.environ["QUOTEX_PASSWORD"]
 
+<<<<<<< HEAD
     DASHBOARD["started_at"] = time.time()
     start_dashboard_server()
 
     client = Quotex(email=email, password=password, lang="en", root_path="data")
+=======
+    client = Quotex(email=email, password=password, lang="en", root_path="data",
+                     on_otp_callback=otp_callback)
+>>>>>>> ad6f96d (dashboard update)
     check, reason = await client.connect()
     if not check:
+        emit("error", message=f"Connection failed: {reason}")
         raise SystemExit(f"Connection failed: {reason}")
+    emit("connected")
 
     if AUTO_TRADE_DEMO:
         await client.api.change_account(AccountType.DEMO)
@@ -546,14 +858,26 @@ async def main():
         if len(open_assets) >= REAL_MARKET_COUNT:
             break
 
-    mode_line = ("AUTO-TRADE ON (DEMO account) -- trades placed automatically."
+    mode_line = ("🤖 Auto-trade ON (DEMO account) -- trades placed automatically."
                  if AUTO_TRADE_DEMO else
-                 "Signal-only, you place trades manually.")
+                 "👀 Signal-only -- you place trades manually.")
     print(f"Monitoring: {open_assets}")
+<<<<<<< HEAD
     send_telegram(f"Signal bot started. Monitoring {len(open_assets)} markets: {', '.join(open_assets)}\n"
                   f"Daily stop: ₹{DAILY_STOP:.2f}. {mode_line}")
     DASHBOARD["mode"] = mode_line
     DASHBOARD["monitoring"] = open_assets
+=======
+    send_telegram(
+        f"✅ <b>Signal bot started</b>\n\n"
+        f"📡 Monitoring {len(open_assets)} markets:\n"
+        f"<code>{html.escape(', '.join(open_assets))}</code>\n\n"
+        f"🛑 Daily stop: ₹{DAILY_STOP:.2f}\n"
+        f"{mode_line}"
+    )
+    emit("monitoring", assets=open_assets, auto_trade=AUTO_TRADE_DEMO, daily_stop=DAILY_STOP,
+         stake=STAKE, max_concurrent=MAX_CONCURRENT_TRADES)
+>>>>>>> ad6f96d (dashboard update)
 
     pnl_tracker = DailyPnL()
     DASHBOARD["pnl_tracker"] = pnl_tracker
@@ -568,10 +892,13 @@ async def main():
         except Exception as e:
             print(f"[{asset}] seed failed: {e}")
         states[asset] = state
+        emit("seeded", asset=asset, candles=list(state.candle_records)[-30:],
+             last_prev_trigger=state.last_prev_trigger_result)
 
+    trade_lock = asyncio.Lock()  # serializes client.buy() calls -- see monitor_asset for why
     try:
         await asyncio.gather(*[
-            monitor_asset(client, asset, states[asset], pnl_tracker) for asset in open_assets
+            monitor_asset(client, asset, states[asset], pnl_tracker, trade_lock) for asset in open_assets
         ])
     finally:
         await client.close()
