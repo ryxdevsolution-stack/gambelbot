@@ -687,14 +687,17 @@ async def main():
     real_assets = [code for code, _name in all_assets if "_otc" not in code.lower()]
     seen = set()
     real_assets = [a for a in real_assets if not (a in seen or seen.add(a))]
+    print(f"[DEBUG] all_assets={len(all_assets)} real_assets={len(real_assets)}")
 
     open_assets = []
     for asset in real_assets:
         try:
             _info, status = await client.check_asset_open(asset)
             is_open = bool(status[2]) if status else False
-        except Exception:
+            print(f"[DEBUG] {asset}: status={status} is_open={is_open}")
+        except Exception as e:
             is_open = False
+            print(f"[DEBUG] {asset}: check_asset_open raised {type(e).__name__}: {e}")
         if is_open:
             open_assets.append(asset)
         if len(open_assets) >= REAL_MARKET_COUNT:
