@@ -32,6 +32,8 @@ STOP_GRACE_SECONDS = 8
 LOG_MAXLEN = 2000
 EVENT_MAXLEN = 300
 ASSET_LOG_MAXLEN = 60
+ALLOWED_CANDLE_PERIODS = {60, 120, 180, 300, 600, 900, 1800, 3600}
+DEFAULT_CANDLE_PERIOD = 300
 
 app = Flask(__name__)
 
@@ -41,6 +43,7 @@ class BotProcess:
         self.lock = threading.RLock()
         self.proc = None
         self.auto_trade = False
+        self.candle_period = DEFAULT_CANDLE_PERIOD
         self.started_at = None
         self.log_lines = deque(maxlen=LOG_MAXLEN)
         self.log_total = 0
@@ -60,12 +63,15 @@ class BotProcess:
         with self.lock:
             return self.proc is not None and self.proc.poll() is None
 
-    def start(self, auto_trade):
+    def start(self, auto_trade, candle_period):
         with self.lock:
             if self.proc is not None and self.proc.poll() is None:
                 return False, "Already running."
+            if candle_period not in ALLOWED_CANDLE_PERIODS:
+                return False, f"Invalid candle period: {candle_period}"
             env = os.environ.copy()
             env["AUTO_TRADE_DEMO"] = "1" if auto_trade else "0"
+            env["CANDLE_PERIOD"] = str(candle_period)
             self.proc = subprocess.Popen(
                 ["python3", "-u", BOT_SCRIPT],
                 cwd=HERE,
@@ -77,6 +83,7 @@ class BotProcess:
                 bufsize=1,
             )
             self.auto_trade = auto_trade
+            self.candle_period = candle_period
             self.started_at = time.time()
             self.log_lines.clear()
             self.log_total = 0
@@ -251,6 +258,7 @@ class BotProcess:
                 "running": running,
                 "pid": self.proc.pid if self.proc else None,
                 "auto_trade": self.auto_trade,
+                "candle_period": self.candle_period,
                 "started_at": self.started_at,
                 "uptime_seconds": (time.time() - self.started_at) if (running and self.started_at) else None,
                 "phase": self.phase,
@@ -276,7 +284,11 @@ def index():
 def api_start():
     body = request.get_json(silent=True) or {}
     auto_trade = bool(body.get("auto_trade", True))
-    ok, msg = bot.start(auto_trade)
+    try:
+        candle_period = int(body.get("candle_period", DEFAULT_CANDLE_PERIOD))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid candle_period."})
+    ok, msg = bot.start(auto_trade, candle_period)
     return jsonify({"ok": ok, "message": msg})
 
 

@@ -44,8 +44,21 @@
           <input id="autoTradeToggle" type="checkbox" checked class="w-4 h-4 accent-emerald-500 shrink-0">
           Auto-trade (places real DEMO trades)
         </label>
+        <label class="flex items-center gap-2 text-sm text-gray-300 select-none">
+          Candle
+          <select id="candlePeriodSelect" class="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm">
+            <option value="60">1 min</option>
+            <option value="120">2 min</option>
+            <option value="180">3 min</option>
+            <option value="300" selected>5 min</option>
+            <option value="600">10 min</option>
+            <option value="900">15 min</option>
+            <option value="1800">30 min</option>
+            <option value="3600">1 hour</option>
+          </select>
+        </label>
       </div>
-      <p class="text-xs text-gray-500">Unchecking Auto-trade runs signal-only mode -- alerts sent, no trades placed. Mode is locked while running; stop first to change it.</p>
+      <p class="text-xs text-gray-500">Unchecking Auto-trade runs signal-only mode -- alerts sent, no trades placed. Candle period and auto-trade mode are locked while running; stop first to change them.</p>
       <p id="actionMsg" class="text-sm break-words"></p>
     </section>
 
@@ -248,6 +261,7 @@ async function refreshState() {
     $('startBtn').disabled = s.running;
     $('stopBtn').disabled = !s.running;
     $('autoTradeToggle').disabled = s.running;
+    $('candlePeriodSelect').disabled = s.running;
 
     // PIN card
     if (phase === 'awaiting_pin') {
@@ -327,10 +341,11 @@ $('startBtn').addEventListener('click', async () => {
   $('actionMsg').textContent = 'Starting...';
   $('actionMsg').className = 'text-sm text-gray-400';
   const auto_trade = $('autoTradeToggle').checked;
+  const candle_period = parseInt($('candlePeriodSelect').value, 10);
   const res = await fetch('/api/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ auto_trade }),
+    body: JSON.stringify({ auto_trade, candle_period }),
   });
   const data = await res.json();
   $('actionMsg').textContent = data.message;

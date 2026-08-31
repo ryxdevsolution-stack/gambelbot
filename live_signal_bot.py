@@ -37,7 +37,7 @@ from pyquotex.utils.account_type import AccountType
 
 load_dotenv()
 
-PERIOD = 300  # 5-min
+PERIOD = int(os.environ.get("CANDLE_PERIOD", "300"))  # seconds; default 5-min, chosen on the dashboard before start
 REAL_MARKET_COUNT = 10
 DAILY_STOP = -500.0  # INR -- stop for the day once P&L hits this (flat Rs.100 stakes)
 STAKE = 100.0  # INR -- account minimum trade size
