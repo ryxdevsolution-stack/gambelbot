@@ -23,6 +23,7 @@ import asyncio
 import html
 import json
 import os
+import re
 import time
 import urllib.request
 import urllib.parse
@@ -30,6 +31,20 @@ from datetime import datetime, timezone, timedelta
 from collections import deque
 
 IST = timezone(timedelta(hours=5, minutes=30))
+CURRENCY_PAIR_RE = re.compile(r'^[A-Z]{3}/[A-Z]{3}$')  # matches pyquotex's display name, e.g. "AUD/JPY" -- excludes indices/stocks/crypto that don't read as a currency pair
+
+# Populated once in main() from client.get_all_asset_name(): raw code -> human
+# display name (e.g. "AUDJPY" -> "AUD/JPY"). Telegram text should always use
+# this, never the raw code, which is an internal broker ticker and can look
+# like nonsense to a non-technical reader (e.g. some non-FX instruments'
+# codes don't read as any real currency pair).
+ASSET_DISPLAY = {}
+
+
+def fmt_ist_12h(ts):
+    """12-hour clock, e.g. '2:40 PM' -- easier to match against a trading
+    app's clock than 24-hour time when placing the trade by hand."""
+    return datetime.fromtimestamp(ts, tz=IST).strftime("%I:%M %p").lstrip("0")
 
 from dotenv import load_dotenv
 from pyquotex.stable_api import Quotex
@@ -428,7 +443,7 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                     print(f"[{asset}] AUTO-TRADE SKIPPED: already {pnl_tracker.open_trades} "
                           f"trade(s) open (max {MAX_CONCURRENT_TRADES}).")
                     send_telegram(
-                        f"⏭️ <b>{html.escape(asset)}</b> -- auto-trade skipped\n"
+                        f"⏭️ <b>{html.escape(ASSET_DISPLAY.get(asset, asset))}</b> -- auto-trade skipped\n"
                         f"Already {MAX_CONCURRENT_TRADES} trades open (max reached)."
                     )
                     emit("trade_skipped", asset=asset, reason="max_concurrent", open_trades=pnl_tracker.open_trades)
@@ -452,7 +467,7 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                     else:
                         print(f"[{asset}] AUTO-TRADE FAILED: {event_data}")
                         send_telegram(
-                            f"⚠️ <b>{html.escape(asset)} auto-trade FAILED</b>\n"
+                            f"⚠️ <b>{html.escape(ASSET_DISPLAY.get(asset, asset))} auto-trade FAILED</b>\n"
                             f"{html.escape(str(event_data))}"
                         )
                         emit("trade_failed", asset=asset, error=str(event_data))
@@ -564,22 +579,18 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                             move = open_price - latest_price  # positive = moved down (red-ward)
                             is_early = typical is not None and typical > 0 and move >= EARLY_CONFIRM_RATIO * typical
                         if in_normal_window or is_early:
-                            trigger_start_ist = datetime.fromtimestamp(candle_start, tz=IST).strftime("%H:%M")
-                            entry_start_ist = datetime.fromtimestamp(candle_start + PERIOD, tz=IST).strftime("%H:%M")
-                            action_line = ("🤖 Auto-trading this one for you\n" if AUTO_TRADE_DEMO
-                                            else "👉 Place this trade yourself\n")
-                            early_line = "⚡ <b>Early call</b> -- move already decisive\n\n" if is_early else ""
-                            closing_note = "closing soon" if is_early else "closing now"
+                            entry_time_12h = fmt_ist_12h(candle_start + PERIOD)
+                            expiry_time_12h = fmt_ist_12h(candle_start + 2 * PERIOD)
+                            display_name = html.escape(ASSET_DISPLAY.get(asset, asset))
+                            action_line = ("🤖 Auto-trading this for you" if AUTO_TRADE_DEMO
+                                            else "👉 Place this trade now")
+                            early_line = "⚡ <b>Early signal</b> -- get ready\n\n" if is_early else ""
                             send_telegram(
-                                f"🔴 <b>SIGNAL: {html.escape(asset)}</b>\n"
-                                f"📉 Direction: <b>DOWN (PUT)</b>\n\n"
                                 f"{early_line}"
-                                f"⏱️ Trigger candle: <b>{trigger_start_ist} IST</b> ({closing_note})\n"
-                                f"🎯 Entry candle: <b>{entry_start_ist} IST</b> ← trade this one\n\n"
-                                f"⏳ Expiry: 5 minutes\n"
-                                f"💰 Stake: ₹{STAKE:.0f}\n"
-                                f"{action_line}\n"
-                                f"📊 Daily P&amp;L: ₹{pnl_tracker.pnl:+.2f}"
+                                f"🔴 <b>{display_name}</b> -- trade <b>DOWN</b>\n\n"
+                                f"⏰ Enter at: <b>{entry_time_12h} IST</b>\n"
+                                f"🔚 Expires at: <b>{expiry_time_12h} IST</b> (5 min)\n\n"
+                                f"{action_line}"
                             )
                             print(f"[{asset}] SIGNAL SENT (remaining={remaining:.1f}s"
                                   f"{' EARLY' if is_early else ''})")
@@ -607,11 +618,30 @@ async def reconcile_real_trade(client, asset, order_id, pnl_tracker):
         win, profit = await client.check_win(order_id, duration=PERIOD)
     except Exception as e:
         print(f"[{asset}] check_win failed for order {order_id}: {e}")
+        win = None
 
-    # Cross-check against trade history -- authoritative, and not subject
-    # to the same event-timing race check_win()'s live wait can hit.
-    try:
-        status, item = await client.get_result(str(order_id))
+    # pyquotex's check_win() waits on a websocket close-event with an
+    # internal 300s timeout that starts essentially at candle-open -- the
+    # same instant a 5-min trade is settling, so it can lose that race and
+    # fall back to a hardcoded ("loss", 0.0) even when the trade actually
+    # won (confirmed live: bot reported loss on trades Quotex's own history
+    # showed as wins). That fallback can only ever produce "loss", never
+    # "win", so a "win" here is trustworthy as-is -- anything else (loss,
+    # or a failed call) is ambiguous and needs the authoritative
+    # get_result() cross-check, retried since the just-closed trade can
+    # take a few seconds to land on page 1 of trade history.
+    if win != "win":
+        status = item = None
+        for attempt in range(5):
+            try:
+                status, item = await client.get_result(str(order_id))
+            except Exception as e:
+                print(f"[{asset}] get_result cross-check failed for order {order_id} "
+                      f"(attempt {attempt + 1}): {e}")
+                status = None
+            if status in ("win", "loss"):
+                break
+            await asyncio.sleep(3.0)
         if status in ("win", "loss"):
             if win is not None and status != win:
                 print(f"[{asset}] check_win said {win} but history says {status} "
@@ -619,14 +649,12 @@ async def reconcile_real_trade(client, asset, order_id, pnl_tracker):
             win = status
             if isinstance(item, dict) and "profitAmount" in item:
                 profit = float(item["profitAmount"])
-    except Exception as e:
-        print(f"[{asset}] get_result cross-check failed for order {order_id}: {e}")
 
     if win not in ("win", "loss"):
         pnl_tracker.trade_closed()
         print(f"[{asset}] Could not determine result for order {order_id} -- NOT recorded to daily P&L.")
         send_telegram(
-            f"❓ <b>{html.escape(asset)} trade result unknown</b>\n"
+            f"❓ <b>{html.escape(ASSET_DISPLAY.get(asset, asset))} trade result unknown</b>\n"
             f"Order: {html.escape(str(order_id))}\n"
             f"Please check your app manually."
         )
@@ -684,9 +712,18 @@ async def main():
 
     print("Connected. Finding open real markets...")
     all_assets = client.get_all_asset_name() or []
-    real_assets = [code for code, _name in all_assets if "_otc" not in code.lower()]
     seen = set()
-    real_assets = [a for a in real_assets if not (a in seen or seen.add(a))]
+    real_assets = []
+    for code, name in all_assets:
+        if "_otc" in code.lower():
+            continue
+        if not CURRENCY_PAIR_RE.match(name):
+            continue  # not a currency pair (index/stock/crypto/commodity) -- skip, don't confuse subscribers
+        if code in seen:
+            continue
+        seen.add(code)
+        real_assets.append(code)
+        ASSET_DISPLAY[code] = name
     print(f"[DEBUG] all_assets={len(all_assets)} real_assets={len(real_assets)}")
 
     open_assets = []
@@ -707,10 +744,11 @@ async def main():
                  if AUTO_TRADE_DEMO else
                  "👀 Signal-only -- you place trades manually.")
     print(f"Monitoring: {open_assets}")
+    display_names = [ASSET_DISPLAY.get(a, a) for a in open_assets]
     send_telegram(
         f"✅ <b>Signal bot started</b>\n\n"
         f"📡 Monitoring {len(open_assets)} markets:\n"
-        f"<code>{html.escape(', '.join(open_assets))}</code>\n\n"
+        f"<code>{html.escape(', '.join(display_names))}</code>\n\n"
         f"🛑 Daily stop: ₹{DAILY_STOP:.2f}\n"
         f"{mode_line}"
     )
