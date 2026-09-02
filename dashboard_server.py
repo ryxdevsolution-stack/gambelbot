@@ -16,6 +16,7 @@ inherited from the terminal, so typing into the terminal no longer works
 once this dashboard is in use).
 """
 
+import hmac
 import json
 import os
 import signal
@@ -35,7 +36,20 @@ ASSET_LOG_MAXLEN = 60
 ALLOWED_CANDLE_PERIODS = {60, 120, 180, 300, 600, 900, 1800, 3600}
 DEFAULT_CANDLE_PERIOD = 300
 
+# This dashboard can start/stop the bot and place trades, and the login PIN
+# passes through it too -- it must never be reachable without a password.
+# Set in .env; the process refuses to start without it (see __main__ below).
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+
 app = Flask(__name__)
+
+
+@app.before_request
+def require_auth():
+    auth = request.authorization
+    ok = auth and auth.type == "basic" and hmac.compare_digest(auth.password or "", DASHBOARD_PASSWORD)
+    if not ok:
+        return ("Login required.", 401, {"WWW-Authenticate": 'Basic realm="quotex-bot dashboard"'})
 
 
 class BotProcess:
@@ -319,4 +333,10 @@ def api_logs():
 
 
 if __name__ == "__main__":
+    if not DASHBOARD_PASSWORD:
+        raise SystemExit(
+            "DASHBOARD_PASSWORD is not set. This dashboard can start/stop the bot and "
+            "place trades, and refuses to run open to the network without a password -- "
+            "set DASHBOARD_PASSWORD in .env and try again."
+        )
     app.run(host="0.0.0.0", port=8090, threaded=True)

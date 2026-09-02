@@ -121,6 +121,20 @@ proved it works. Treat results as a live test, not a guarantee.
 | `DEBUG_HEARTBEAT` | `0` | Set to `1` for a ~15s heartbeat per asset plus a `DEBUG candle closed ...` line every time a candle closes with its official open/close/color — useful for verifying a signal against the real data in real time rather than after the fact. |
 | `DASHBOARD_PORT` | `8787` | Port the dashboard listens on inside the container; remap with `-p <host>:<container>` if you change it or it collides with something else. |
 | `PAYOUT_MIN` | `85` | Signals are held back (not sent, not auto-traded) if the asset's current live payout % is below this. Quotex's payout per asset changes through the day; the bot rechecks every 60s. Real (non-OTC) markets have topped out around 87% in practice, so setting this above ~87 will silence most/all signals. |
+| `DASHBOARD_PASSWORD` | *(required for `dashboard_server.py`)* | HTTP Basic Auth password for the browser start/stop dashboard (see below). That dashboard can start/stop the bot and place trades with no other protection, so it refuses to start without this set. |
+
+## The browser start/stop dashboard
+
+`dashboard_server.py` (separate from the read-only dashboard above) gives you a **Start/Stop button in the browser**, plus PIN/OTP entry on the page itself instead of the terminal — handy for running the bot from a phone.
+
+```bash
+# set DASHBOARD_PASSWORD in .env first (see .env.example)
+docker run --rm -it --env-file .env -p 8090:8090 -v "$(pwd):/app" quotex-bot python3 dashboard_server.py
+```
+
+Open `http://<host>:8090` — your browser will prompt for a username (leave blank or anything) and the password you set in `DASHBOARD_PASSWORD`. Clicking Start runs the exact same `live_signal_bot.py` as running it directly from the command line — same logic, same fixes, just controlled from a page instead of a terminal.
+
+**This binds to all interfaces (`0.0.0.0`)** so it's reachable from outside the host (e.g. your phone hitting the VPS's IP) — only the password protects it. Use a long, random `DASHBOARD_PASSWORD`, and prefer an SSH tunnel (`ssh -L 8090:localhost:8090 user@host`, then open `http://localhost:8090` locally) over exposing the port directly if you can, since this is plain HTTP — the password (and any PIN you type) travels unencrypted otherwise.
 
 Example, everything on:
 ```powershell
