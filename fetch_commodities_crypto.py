@@ -57,6 +57,7 @@ async def main():
 
         print(f"\nOpen assets to fetch: {len(open_assets)} -> {open_assets}", flush=True)
 
+        os.makedirs("data", exist_ok=True)
         for period in PERIODS:
             for asset in open_assets:
                 try:
