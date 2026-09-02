@@ -267,3 +267,82 @@ def main():
 
 
 main()
+
+
+def find_90pct_slices_and_validate():
+    """Concretely test the user's proposed filter: for every pattern,
+    slice by asset and find any train-set win rate >= 90%, then check
+    what that exact slice does on validation data it never touched."""
+    all_assets = load_asset_csvs()
+    all_times = [r["time"] for rows in all_assets.values() for r in rows]
+    cutoff = min(all_times) + TRAIN_FRACTION * (max(all_times) - min(all_times))
+
+    print(f"\n{'='*70}\nSearching for ANY per-asset slice hitting >=90% train win rate\n{'='*70}")
+    found_any = False
+    for pname, detector in PATTERNS.items():
+        for asset, rows in all_assets.items():
+            tn = tw = vn = vw = 0
+            for i, direction in detector(rows):
+                if rows[i]["close"] == rows[i + 1]["close"]:
+                    continue
+                actual_up = rows[i + 1]["close"] > rows[i]["close"]
+                win = actual_up if direction == "up" else not actual_up
+                if rows[i]["time"] < cutoff:
+                    tn += 1
+                    tw += win
+                else:
+                    vn += 1
+                    vw += win
+            if tn >= 10 and (tw / tn) >= 0.90:
+                found_any = True
+                val_rate = f"{vw/vn:.1%}" if vn else "n/a"
+                print(f"  {pname:24s} {asset:14s} TRAIN {fmt_ci(tn, tw)}  ->  VALIDATION n={vn} win={vw} rate={val_rate}")
+    if not found_any:
+        print("  None. No pattern+asset slice reaches 90% train win rate even at n>=10 "
+              "(and n>=10 is already too small to trust -- true edges don't need this much slicing to find).")
+
+
+if __name__ == "__main__" and "--filter90" in sys.argv:
+    find_90pct_slices_and_validate()
+
+
+ASSET_PAYOUT = {"CADJPY": 0.87, "EURGBP": 0.86, "AUDJPY": 0.85}
+
+
+def per_asset_breakdown():
+    all_assets = load_asset_csvs()
+    all_times = [r["time"] for rows in all_assets.values() for r in rows]
+    cutoff = min(all_times) + TRAIN_FRACTION * (max(all_times) - min(all_times))
+
+    print(f"\n{'='*70}\nPer-asset breakdown for high-payout real pairs: {list(ASSET_PAYOUT)}\n{'='*70}")
+    for asset, payout in ASSET_PAYOUT.items():
+        if asset not in all_assets:
+            print(f"  {asset}: no cached data for this period")
+            continue
+        breakeven = 1 / (1 + payout)
+        rows = all_assets[asset]
+        print(f"\n{asset} (current payout {payout:.0%}, breakeven win rate {breakeven:.1%}):")
+        for pname, detector in PATTERNS.items():
+            tn = tw = vn = vw = 0
+            for i, direction in detector(rows):
+                if rows[i]["close"] == rows[i + 1]["close"]:
+                    continue
+                actual_up = rows[i + 1]["close"] > rows[i]["close"]
+                win = actual_up if direction == "up" else not actual_up
+                if rows[i]["time"] < cutoff:
+                    tn += 1
+                    tw += win
+                else:
+                    vn += 1
+                    vw += win
+            train_rate = tw / tn if tn else 0
+            val_rate = vw / vn if vn else 0
+            flag = ""
+            if tn >= 10 and train_rate >= breakeven:
+                held = vn >= 10 and val_rate >= breakeven
+                flag = "  <-- clears breakeven on search, " + ("HOLDS on validation!" if held else "fails validation")
+            print(f"  {pname:24s} TRAIN {fmt_ci(tn, tw)}   VAL {fmt_ci(vn, vw)}{flag}")
+
+
+if __name__ == "__main__" and "--perasset" in sys.argv:
+    per_asset_breakdown()
