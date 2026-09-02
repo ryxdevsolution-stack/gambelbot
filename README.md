@@ -120,6 +120,7 @@ proved it works. Treat results as a live test, not a guarantee.
 | `AUTO_TRADE_DEMO` | `0` | Set to `1` to have the bot place the ₹100 trade itself, on your **DEMO** account only. There is no code path to real-money auto-trade. |
 | `DEBUG_HEARTBEAT` | `0` | Set to `1` for a ~15s heartbeat per asset plus a `DEBUG candle closed ...` line every time a candle closes with its official open/close/color — useful for verifying a signal against the real data in real time rather than after the fact. |
 | `DASHBOARD_PORT` | `8787` | Port the dashboard listens on inside the container; remap with `-p <host>:<container>` if you change it or it collides with something else. |
+| `PAYOUT_MIN` | `85` | Signals are held back (not sent, not auto-traded) if the asset's current live payout % is below this. Quotex's payout per asset changes through the day; the bot rechecks every 60s. Real (non-OTC) markets have topped out around 87% in practice, so setting this above ~87 will silence most/all signals. |
 
 Example, everything on:
 ```powershell

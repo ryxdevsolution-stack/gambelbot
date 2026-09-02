@@ -74,6 +74,13 @@ DEBUG_HEARTBEAT = os.environ.get("DEBUG_HEARTBEAT", "0") == "1"
 # here; that would need a separate, explicit change.
 AUTO_TRADE_DEMO = os.environ.get("AUTO_TRADE_DEMO", "0") == "1"
 
+# Quotex's payout % per asset changes live and varies a lot (seen: 20% on
+# some indices up to 95% on some OTC pairs). Below PAYOUT_MIN, the win rate
+# needed just to break even gets worse than what any tested pattern here
+# clears -- so signals are held back rather than sent at bad odds.
+PAYOUT_MIN = float(os.environ.get("PAYOUT_MIN", "85"))
+PAYOUT_REFRESH_SECONDS = 60
+
 def emit(event_type, **fields):
     """Print a structured JSON event line (prefixed EVT::) alongside the
     normal human-readable print()s elsewhere in this file. A dashboard can
@@ -96,6 +103,31 @@ def send_telegram(text):
         urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
     except Exception as e:
         print(f"[telegram send failed] {e}")
+
+
+def current_payout_pct(client, asset):
+    """Live payout % for `asset` (its 1-min/5-min binary payment), read
+    from pyquotex's already-fetched instrument list -- no network call.
+    None if the asset isn't in the list yet (call payout_refresher first)."""
+    try:
+        for i in client.api.instruments:
+            if i[1] == asset:
+                return float(i[5])
+    except Exception:
+        pass
+    return None
+
+
+async def payout_refresher(client):
+    """Keeps pyquotex's instrument list (and therefore payout %s) fresh --
+    Quotex adjusts payouts through the day, so a value fetched once at
+    startup can go stale. Runs for the life of the bot."""
+    while True:
+        try:
+            await client.get_instruments()
+        except Exception as e:
+            print(f"[payout_refresher] refresh failed: {e}")
+        await asyncio.sleep(PAYOUT_REFRESH_SECONDS)
 
 
 def color(open_, close_):
@@ -579,21 +611,32 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                             move = open_price - latest_price  # positive = moved down (red-ward)
                             is_early = typical is not None and typical > 0 and move >= EARLY_CONFIRM_RATIO * typical
                         if in_normal_window or is_early:
+                            payout = current_payout_pct(client, asset)
+                            if payout is not None and payout < PAYOUT_MIN:
+                                print(f"[{asset}] SIGNAL SKIPPED -- payout {payout:.0f}% "
+                                      f"< PAYOUT_MIN {PAYOUT_MIN:.0f}%")
+                                emit("signal_skipped_payout", asset=asset, candle_start=candle_start,
+                                     payout=payout, payout_min=PAYOUT_MIN)
+                                state.signaled_for_candle_start = candle_start
+                                await asyncio.sleep(1)
+                                continue
                             entry_time_12h = fmt_ist_12h(candle_start + PERIOD)
                             expiry_time_12h = fmt_ist_12h(candle_start + 2 * PERIOD)
                             display_name = html.escape(ASSET_DISPLAY.get(asset, asset))
                             action_line = ("🤖 Auto-trading this for you" if AUTO_TRADE_DEMO
                                             else "👉 Place this trade now")
                             early_line = "⚡ <b>Early signal</b> -- get ready\n\n" if is_early else ""
+                            payout_line = f"💰 Payout: <b>{payout:.0f}%</b>\n" if payout is not None else ""
                             send_telegram(
                                 f"{early_line}"
                                 f"🔴 <b>{display_name}</b> -- trade <b>DOWN</b>\n\n"
                                 f"⏰ Enter at: <b>{entry_time_12h} IST</b>\n"
-                                f"🔚 Expires at: <b>{expiry_time_12h} IST</b> (5 min)\n\n"
+                                f"🔚 Expires at: <b>{expiry_time_12h} IST</b> (5 min)\n"
+                                f"{payout_line}\n"
                                 f"{action_line}"
                             )
                             print(f"[{asset}] SIGNAL SENT (remaining={remaining:.1f}s"
-                                  f"{' EARLY' if is_early else ''})")
+                                  f"{' EARLY' if is_early else ''}, payout={payout})")
                             pnl_tracker.record_signal()
                             emit("signal", asset=asset, trigger_time=candle_start, entry_time=candle_start + PERIOD,
                                  reason=state.confirmation_reason(), auto_trade=AUTO_TRADE_DEMO, early=is_early)
@@ -704,6 +747,14 @@ async def main():
         emit("error", message=f"Connection failed: {reason}")
         raise SystemExit(f"Connection failed: {reason}")
     emit("connected")
+
+    try:
+        await client.get_instruments()
+    except Exception as e:
+        print(f"[payout] initial get_instruments failed: {e}")
+    asyncio.create_task(payout_refresher(client))
+    print(f"Payout filter: signals held back below {PAYOUT_MIN:.0f}% payout "
+          f"(rechecked every {PAYOUT_REFRESH_SECONDS}s).")
 
     if AUTO_TRADE_DEMO:
         await client.api.change_account(AccountType.DEMO)
