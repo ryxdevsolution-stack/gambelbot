@@ -24,6 +24,7 @@ import html
 import json
 import os
 import re
+import threading
 import time
 import urllib.request
 import urllib.parse
@@ -96,7 +97,20 @@ def send_telegram(text):
     """HTML-formatted Telegram message. Any interpolated value that isn't
     a known-safe fixed string (asset codes, our own formatted numbers)
     must be passed through html.escape() first -- Telegram rejects the
-    whole message if the HTML is malformed."""
+    whole message if the HTML is malformed.
+
+    Fires the actual HTTP call on a background thread. All monitored
+    assets share ONE asyncio event loop, and their candles close on the
+    same period boundary, so a blocking urlopen() called inline here
+    used to freeze every asset's loop -- and pyquotex's own WebSocket
+    read -- for up to its 10s timeout on every signal/result/error
+    message. Confirmed live: that stall is enough to both misalign the
+    bot's sense of "current candle" from real time by minutes over a
+    session, and to make buy() miss its own confirmation window."""
+    threading.Thread(target=_send_telegram_blocking, args=(text,), daemon=True).start()
+
+
+def _send_telegram_blocking(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
     try:
@@ -494,6 +508,7 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                         pnl_tracker.consecutive_buy_timeouts = 0
                         print(f"[{asset}] AUTO-TRADE placed at candle open, order_id={order_id} "
                               f"(open_trades={pnl_tracker.open_trades})")
+                        send_telegram(f"✅ <b>{html.escape(ASSET_DISPLAY.get(asset, asset))}</b> placed")
                         emit("trade_placed", asset=asset, order_id=str(order_id), open_trades=pnl_tracker.open_trades)
                         asyncio.create_task(
                             reconcile_real_trade(client, asset, order_id, pnl_tracker)
@@ -583,8 +598,14 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                         pnl_tracker.record(won)
                         print(f"[{asset}] entry candle closed: "
                               f"{'WIN' if won else 'LOSS'}  daily_pnl=₹{pnl_tracker.pnl:+.2f}")
+                        result_amount = STAKE * PAYOUT if won else -STAKE
+                        display_name = html.escape(ASSET_DISPLAY.get(asset, asset))
+                        send_telegram(
+                            f"{'🟢' if won else '🔴'} <b>{display_name}</b> "
+                            f"{'WON' if won else 'LOST'} ₹{result_amount:+.2f}"
+                        )
                         emit("result", asset=asset, entry_time=closed_start, won=won, mode="simulated",
-                             amount=(STAKE * PAYOUT if won else -STAKE), daily_pnl=pnl_tracker.pnl,
+                             amount=result_amount, daily_pnl=pnl_tracker.pnl,
                              wins=pnl_tracker.wins, losses=pnl_tracker.losses)
                     state.pending_entry_start = None
                     state.auto_traded_entry = False
@@ -650,19 +671,9 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                                 await asyncio.sleep(1)
                                 continue
                             entry_time_12h = fmt_ist_12h(candle_start + PERIOD)
-                            expiry_time_12h = fmt_ist_12h(candle_start + 2 * PERIOD)
                             display_name = html.escape(ASSET_DISPLAY.get(asset, asset))
-                            action_line = ("🤖 Auto-trading this for you" if AUTO_TRADE_DEMO
-                                            else "👉 Place this trade now")
-                            early_line = "⚡ <b>Early signal</b> -- get ready\n\n" if is_early else ""
-                            payout_line = f"💰 Payout: <b>{payout:.0f}%</b>\n" if payout is not None else ""
                             send_telegram(
-                                f"{early_line}"
-                                f"🔴 <b>{display_name}</b> -- trade <b>DOWN</b>\n\n"
-                                f"⏰ Enter at: <b>{entry_time_12h} IST</b>\n"
-                                f"🔚 Expires at: <b>{expiry_time_12h} IST</b> (5 min)\n"
-                                f"{payout_line}\n"
-                                f"{action_line}"
+                                f"🔻 <b>{display_name}</b> DOWN -- {entry_time_12h} IST"
                             )
                             print(f"[{asset}] SIGNAL SENT (remaining={remaining:.1f}s"
                                   f"{' EARLY' if is_early else ''}, payout={payout})")
@@ -746,6 +757,11 @@ async def reconcile_real_trade(client, asset, order_id, pnl_tracker):
     pnl_tracker.record_amount(amount, won)
     print(f"[{asset}] REAL trade result: {win}  profit={profit}  amount=₹{amount:+.2f}  "
           f"daily_pnl=₹{pnl_tracker.pnl:+.2f}  open_trades={pnl_tracker.open_trades}")
+    display_name = html.escape(ASSET_DISPLAY.get(asset, asset))
+    send_telegram(
+        f"{'🟢' if won else '🔴'} <b>{display_name}</b> "
+        f"{'WON' if won else 'LOST'} ₹{amount:+.2f}"
+    )
     emit("result", asset=asset, order_id=str(order_id), won=won, amount=amount, mode="real",
          daily_pnl=pnl_tracker.pnl, wins=pnl_tracker.wins, losses=pnl_tracker.losses,
          open_trades=pnl_tracker.open_trades)
@@ -820,18 +836,8 @@ async def main():
         if len(open_assets) >= REAL_MARKET_COUNT:
             break
 
-    mode_line = ("🤖 Auto-trade ON (DEMO account) -- trades placed automatically."
-                 if AUTO_TRADE_DEMO else
-                 "👀 Signal-only -- you place trades manually.")
     print(f"Monitoring: {open_assets}")
-    display_names = [ASSET_DISPLAY.get(a, a) for a in open_assets]
-    send_telegram(
-        f"✅ <b>Signal bot started</b>\n\n"
-        f"📡 Monitoring {len(open_assets)} markets:\n"
-        f"<code>{html.escape(', '.join(display_names))}</code>\n\n"
-        f"🛑 Daily stop: ₹{DAILY_STOP:.2f}\n"
-        f"{mode_line}"
-    )
+    send_telegram("✅ Signal started")
     emit("monitoring", assets=open_assets, auto_trade=AUTO_TRADE_DEMO, daily_stop=DAILY_STOP,
          stake=STAKE, max_concurrent=MAX_CONCURRENT_TRADES)
 
