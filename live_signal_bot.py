@@ -356,6 +356,7 @@ class DailyPnL:
         self.signals_sent = 0  # session totals -- do not reset daily, purely informational
         self.wins = 0
         self.losses = 0
+        self.consecutive_buy_timeouts = 0  # tracks buy() "Timeout" streaks -- see monitor_asset
 
     def can_open_trade(self):
         return self.open_trades < MAX_CONCURRENT_TRADES
@@ -490,6 +491,7 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                     if success and isinstance(event_data, dict) and event_data.get("id"):
                         order_id = event_data["id"]
                         pnl_tracker.trade_opened()
+                        pnl_tracker.consecutive_buy_timeouts = 0
                         print(f"[{asset}] AUTO-TRADE placed at candle open, order_id={order_id} "
                               f"(open_trades={pnl_tracker.open_trades})")
                         emit("trade_placed", asset=asset, order_id=str(order_id), open_trades=pnl_tracker.open_trades)
@@ -497,17 +499,44 @@ async def monitor_asset(client, asset, state, pnl_tracker, trade_lock):
                             reconcile_real_trade(client, asset, order_id, pnl_tracker)
                         )
                     else:
-                        print(f"[{asset}] AUTO-TRADE FAILED: {event_data}")
+                        is_timeout = event_data == "Timeout"
+                        print(f"[{asset}] AUTO-TRADE FAILED: {event_data!r} ({type(event_data).__name__})")
+                        note = (
+                            "\nNote: a Timeout doesn't guarantee no order was placed -- pyquotex "
+                            "sends the buy request before it waits for confirmation, so check the "
+                            "Quotex demo account directly if this keeps happening."
+                            if is_timeout else ""
+                        )
                         send_telegram(
                             f"⚠️ <b>{html.escape(ASSET_DISPLAY.get(asset, asset))} auto-trade FAILED</b>\n"
-                            f"{html.escape(str(event_data))}"
+                            f"{html.escape(str(event_data))}{note}"
                         )
                         emit("trade_failed", asset=asset, error=str(event_data))
-                        # No real order exists -- clear the flag so the entry-candle
-                        # close below falls through to the simulated P&L record
-                        # instead of silently waiting forever on a result that will
-                        # never arrive.
+                        # No CONFIRMED order exists -- clear the flag so the entry-candle
+                        # close below falls through to the simulated P&L record instead of
+                        # silently waiting forever on a result that will never arrive. (A
+                        # Timeout specifically only means the confirmation never arrived,
+                        # not that the order never landed -- see the Telegram note above.)
                         state.auto_traded_entry = False
+
+                        # A single slow confirmation is normal network jitter. Several
+                        # Timeouts in a row on the same connection points at a stalled/
+                        # degraded WebSocket that will keep timing out every future buy()
+                        # too -- reconnect (pyquotex's own recovery path) rather than let
+                        # every remaining signal today silently fail the same way.
+                        if is_timeout:
+                            pnl_tracker.consecutive_buy_timeouts += 1
+                            if pnl_tracker.consecutive_buy_timeouts >= 2:
+                                print(f"[{asset}] {pnl_tracker.consecutive_buy_timeouts} consecutive "
+                                      f"buy() timeouts -- reconnecting to Quotex before the next trade.")
+                                try:
+                                    check, reason = await client.reconnect()
+                                    print(f"[{asset}] reconnect() -> {check}, {reason}")
+                                except Exception as e:
+                                    print(f"[{asset}] reconnect() raised: {e!r}")
+                                pnl_tracker.consecutive_buy_timeouts = 0
+                        else:
+                            pnl_tracker.consecutive_buy_timeouts = 0
 
         # 2. Detect a boundary crossing: the candle we were tracking has
         #    now closed. Finalize it using the OFFICIAL server-recorded
